@@ -351,7 +351,7 @@ def _bt_spread(ka: list, kb: list, transform, lookback: int,
 def backtest_all() -> dict:
     """全策略回测: 趋势/回归三策略 4 标的等权合成 + 价差类直接回测。日线。"""
     out = {}
-    for strat in ("ma", "supertrend", "bb"):
+    for strat in ("ma", "supertrend", "bb", "macd", "psar", "rsi", "dualthrust"):
         curves, tn = [], 0
         for s in CFG["symbols"]:
             eq, n = _bt_signal_strategy(strat, s["symbol"])
@@ -397,20 +397,24 @@ def run_strategy(strat: str, klines: dict, quotes: dict, heat: dict) -> dict:
                 sa, sb = pairs_signal(klines[a], klines[b])
                 sigs[a], sigs[b] = sa, sb
     else:
-        fn = {"supertrend": lt.supertrend_signal,
-              "ma": lambda h, l, cl: lt.ma_signal(cl),
-              "bb": lambda h, l, cl: lt.bb_signal(cl),
-              "macd": lambda h, l, cl: lt.macd_signal(cl),
-              "psar": lt.psar_signal,
-              "rsi": lambda h, l, cl: lt.rsi_signal(cl)}[strat]
-        for s in CFG["symbols"]:
-            kl = klines[s["symbol"]]
-            if len(kl) > lt.STRAT["slow"] + 2:
-                sig = (lt.dual_thrust_signal(kl) if strat == "dualthrust"
-                       else fn([k["high"] for k in kl],
-                               [k["low"] for k in kl],
-                               [k["close"] for k in kl]))
-                sigs[s["symbol"]] = sig
+        if strat == "dualthrust":
+            for s in CFG["symbols"]:
+                kl = klines[s["symbol"]]
+                if len(kl) > lt.STRAT["slow"] + 2:
+                    sigs[s["symbol"]] = lt.dual_thrust_signal(kl)
+        else:
+            fn = {"supertrend": lt.supertrend_signal,
+                  "ma": lambda h, l, cl: lt.ma_signal(cl),
+                  "bb": lambda h, l, cl: lt.bb_signal(cl),
+                  "macd": lambda h, l, cl: lt.macd_signal(cl),
+                  "psar": lt.psar_signal,
+                  "rsi": lambda h, l, cl: lt.rsi_signal(cl)}[strat]
+            for s in CFG["symbols"]:
+                kl = klines[s["symbol"]]
+                if len(kl) > lt.STRAT["slow"] + 2:
+                    sigs[s["symbol"]] = fn([k["high"] for k in kl],
+                                           [k["low"] for k in kl],
+                                           [k["close"] for k in kl])
     with lt.db() as c:
         for sym, sig in sigs.items():
             if sig in ("BUY", "SELL") and quotes.get(sym):
