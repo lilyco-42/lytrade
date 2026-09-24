@@ -199,8 +199,9 @@ def run_cycle() -> dict:
         sym = s["symbol"]
         closes = [k["close"] for k in (klines.get(sym) or []) if k.get("close")][-90:]
         q = quotes.get(sym)
-        prev = closes[-2] if len(closes) >= 2 else None
-        chg = round((q / prev - 1) * 100, 2) if q and prev else 0.0
+        # longbridge 日线含今日实时K，quote 又拼一根 → 有 quote 时昨收取 [-3]
+        base = closes[-3] if q else closes[-2]
+        chg = round((q / base - 1) * 100, 2) if q and base else 0.0
         mkt[sym] = {"name": s["name"], "price": q, "chg_pct": chg, "closes": closes}
     MARKET_CACHE.clear(); MARKET_CACHE.update(mkt)
     HEAT_CACHE.clear()
