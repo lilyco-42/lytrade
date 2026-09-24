@@ -450,19 +450,14 @@ def execute(c, symbol: str, name: str, side: str, price: float, ts: float,
             fee = round(qty * px * fee_rate, 4)
             c.execute("DELETE FROM positions WHERE symbol=?", (symbol,))
             c.execute("UPDATE account SET cash=? WHERE id=1", (cash + qty * px - fee,))
-        else:                                     # 开空/加空
+        elif qty0 == 0:                           # 开空（已有空仓不重复加, 防趋势中敞口滚雪球）
             budget = min(cash * 0.95, cap)
             qty = math.floor(budget / px * 100) / 100
             if qty < 0.01:
                 return
             fee = round(qty * px * fee_rate, 4)
-            new_qty = round(qty0 - qty, 6)
-            if pos:
-                c.execute("UPDATE positions SET qty=?, name=? WHERE symbol=?",
-                          (new_qty, name, symbol))
-            else:
-                c.execute("INSERT INTO positions(symbol,name,qty,avg_cost) VALUES(?,?,?,?)",
-                          (symbol, name, new_qty, px))
+            c.execute("INSERT INTO positions(symbol,name,qty,avg_cost) VALUES(?,?,?,?)",
+                      (symbol, name, -qty, px))
     else:
         return
     c.execute("INSERT INTO trades(ts,symbol,side,qty,price,fee,note) VALUES(?,?,?,?,?,?,?)",
