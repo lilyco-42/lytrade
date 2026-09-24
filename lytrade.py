@@ -128,9 +128,9 @@ def _parse_time(v) -> float:
 
 def fetch_kline(symbol: str, count: int, period: str = "day") -> list[dict]:
     """历史 K 线（旧→新）。period: 1m 5m 15m 30m 1h day …（策略参数均按根数，切周期零改动）。
-    --session all 含盘前/盘后 K 线——收盘时段美股盘前波动也能驱动日内信号。"""
+    --session all 含盘前/盘后 K 线；--adjust forward 前复权（跨拆股数据必需）。"""
     data = cli_json(["kline", symbol, "--period", period, "--count", str(count),
-                     "--session", "all"])
+                     "--session", "all", "--adjust", "forward"])
     if not data:
         return []
     rows = data if isinstance(data, list) else data.get("candles") or data.get("items") or []
