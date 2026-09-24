@@ -211,3 +211,27 @@ def trades(strategy: str, limit: int = 50):
         rows = c.execute("SELECT * FROM trades ORDER BY ts DESC LIMIT ?",
                          (min(limit, 200),)).fetchall()
     return {"trades": [dict(r) for r in rows]}
+
+
+@app.get("/v1/equity/{strategy}", dependencies=[Depends(require_token)])
+def equity(strategy: str, limit: int = 500):
+    """净值序列（面板折线用）。"""
+    if strategy not in STRATEGIES:
+        raise HTTPException(404, f"unknown strategy: {strategy}")
+    lt.DB_PATH = BASE / "data" / f"svc_{strategy}.db"
+    lt.init_db()
+    with lt.db() as c:
+        rows = c.execute(
+            "SELECT ts, total FROM equity ORDER BY ts DESC LIMIT ?",
+            (min(limit, 2000),)).fetchall()
+    return {"equity": [[r["ts"] * 1000, r["total"]] for r in reversed(rows)]}
+
+
+@app.get("/panel")
+def panel():
+    """长桥风格交易面板（自包含单文件）。"""
+    from fastapi.responses import FileResponse
+    p = BASE / "panel.html"
+    if not p.exists():
+        raise HTTPException(404, "panel.html not found")
+    return FileResponse(p, media_type="text/html")

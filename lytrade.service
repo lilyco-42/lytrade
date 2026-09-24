@@ -1,0 +1,16 @@
+[Unit]
+Description=lytrade multi-strategy paper trading service
+After=network-online.target
+
+[Service]
+WorkingDirectory=/opt/lytrade
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=LYTRADE_TOKEN=__REPLACE__
+Environment=LYSOURCE_TOKEN=__REPLACE_LYSOURCE__
+Environment=LYTRADE_INTERVAL=300
+ExecStart=/opt/lytrade/venv/bin/uvicorn service:app --host 127.0.0.1 --port 8792
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
