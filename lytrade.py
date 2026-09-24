@@ -66,6 +66,7 @@ def init_db() -> None:
 
 
 def reset_account() -> None:
+    init_db()
     with db() as c:
         c.executescript(
             "DELETE FROM account; DELETE FROM positions;"
@@ -104,8 +105,29 @@ def cli_json(args: list[str]) -> dict | list | None:
         return None
 
 
+def _parse_time(v) -> float:
+    """兼容 unix 秒与 ISO8601（CLI 输出 '2026-09-21T16:00:00Z'）。"""
+    if v is None:
+        return 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip()
+    try:
+        return float(s)
+    except ValueError:
+        pass
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except ValueError:
+        return 0.0
+
+
 def fetch_kline(symbol: str, count: int) -> list[dict]:
-    """历史日线（旧→新）。字段宽容解析。"""
+    """历史日线（旧→新）。字段宽容解析（CLI 数值为字符串）。"""
     data = cli_json(["kline", symbol, "--period", "day", "--count", str(count)])
     if not data:
         return []
@@ -114,7 +136,7 @@ def fetch_kline(symbol: str, count: int) -> list[dict]:
     for r in rows:
         try:
             out.append({
-                "ts": float(r.get("time") or r.get("timestamp") or r.get("ts") or 0),
+                "ts": _parse_time(r.get("time") or r.get("timestamp") or r.get("ts")),
                 "close": float(r.get("close") or r.get("c")),
                 "open": float(r.get("open") or r.get("o") or 0),
                 "high": float(r.get("high") or r.get("h") or 0),
