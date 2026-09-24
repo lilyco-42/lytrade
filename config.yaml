@@ -16,7 +16,7 @@ strategy:
   event_heat_min: 0.15          # 资讯热度低于此值时只平不开
   kline_count: 150              # 150 根 5 分钟线 ≈ 12.5 小时窗口
   bb_period: 20                 # 布林带周期（根数）
-  bb_multiplier: 2.0            # 上下轨 ±2σ
+  bb_multiplier: 1.5            # ±1.5σ（盘前窄幅震荡下提高触轨频率，均值回归常见配置）
 
 lysource:
   base_url: https://lain42.top/lysource
