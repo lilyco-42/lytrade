@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import secrets
 import sqlite3
@@ -232,6 +233,145 @@ def arb_cycle(klines: dict, quotes: dict) -> dict:
     sig = action if action != "WAIT" else ("HOLD" if row else "WAIT")
     return {"signals": {pair_label: sig, "premium": f"{cur:.2%}", "z": round(z, 2)},
             "equity": round(total, 2)}
+
+
+# ---------------------------------------------------------------- backtest (空闲时段历史验证)
+BT_CFG = CFG.get("backtest", {})   # 回测专用参数覆写（日线语义），与实时盘 5m 参数隔离
+
+
+def _bt_metrics(equity: list[float], trades_n: int) -> dict:
+    """净值序列 → 绩效指标（日频）。"""
+    if len(equity) < 3 or equity[0] <= 0:
+        return {}
+    init = lt.ACC["initial_cash"]
+    total_ret = equity[-1] / init - 1
+    years = max(len(equity) / 252, 1e-9)
+    # 空头无保证金约束时净值可能穿零, 防御负底数开方
+    ann = (max(equity[-1], 1e-6) / init) ** (1 / years) - 1
+    rets = [equity[i] / equity[i - 1] - 1 for i in range(1, len(equity)) if equity[i - 1] > 0]
+    sd = statistics.stdev(rets) if len(rets) > 2 else 0.0
+    sharpe = (statistics.mean(rets) / sd * math.sqrt(252)) if sd > 0 else 0.0
+    peak, mdd = equity[0], 0.0
+    for v in equity:
+        peak = max(peak, v)
+        if peak > 0:
+            mdd = max(mdd, (peak - v) / peak)
+    return {"total_return": f"{total_ret:+.2%}", "annual": f"{ann:+.2%}",
+            "sharpe": round(sharpe, 2), "max_drawdown": f"{-mdd:.2%}", "trades": trades_n}
+
+
+def _bt_signal_strategy(strategy: str, symbol: str) -> tuple[list, int]:
+    """单策略单标的日线回测（临时 DB 隔离 + 参数覆写，不碰实时模拟盘账本）。"""
+    kl = lt.fetch_kline(symbol, BT_CFG.get("kline_count", 500), "day")
+    saved = dict(lt.STRAT)
+    lt.STRAT.update(BT_CFG)                    # 覆写为日线语义参数
+    try:
+        warmup = max(48, lt.STRAT.get("adx_filter_warmup", 30), lt.STRAT.get("bb_period", 20))
+        if len(kl) < warmup + 2:
+            return [], 0
+        fn = {"ma": lambda k: lt.ma_signal([x["close"] for x in k]),
+              "supertrend": lambda k: lt.supertrend_signal(
+                  [x["high"] for x in k], [x["low"] for x in k], [x["close"] for x in k]),
+              "bb": lambda k: lt.bb_signal([x["close"] for x in k])}[strategy]
+        tmp = BASE / "data" / f"bt_{strategy}_{symbol.replace('.', '_')}.db"
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        old_db = lt.DB_PATH
+        lt.DB_PATH = tmp
+        lt.init_db()
+        try:
+            with lt.db() as c:
+                c.execute("INSERT OR IGNORE INTO account(id,cash) VALUES(1,?)",
+                          (lt.ACC["initial_cash"],))
+            conn = lt.db()
+            try:
+                for i in range(warmup, len(kl)):
+                    sig = fn(kl[:i + 1])
+                    if sig in ("BUY", "SELL"):
+                        lt.execute(conn, symbol, symbol, sig, kl[i]["close"], kl[i]["ts"],
+                                   note=f"bt:{strategy}")
+                        lt.mark_equity(conn, {symbol: kl[i]["close"]})
+                eq = [[r["ts"] * 1000, r["total"]] for r in
+                      conn.execute("SELECT ts,total FROM equity ORDER BY ts")]
+                n = conn.execute("SELECT COUNT(*) n FROM trades").fetchone()["n"]
+            finally:
+                conn.close()
+        finally:
+            lt.DB_PATH = old_db
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return eq, n
+    finally:
+        lt.STRAT.clear()
+        lt.STRAT.update(saved)
+
+
+def _bt_spread(ka: list, kb: list, transform, lookback: int,
+               entry_z: float, exit_z: float) -> dict:
+    """价差类回测（pairs/arb 同构）: Z-score 开平, 价差 PnL 直接记账。"""
+    n = min(len(ka), len(kb))
+    if n < lookback + 2:
+        return {"equity": [], "metrics": {}}
+    spread = [transform(ka[-n + i]["close"], kb[-n + i]["close"]) for i in range(n)]
+    ts = [ka[-n + i]["ts"] for i in range(n)]
+    cash = lt.ACC["initial_cash"]
+    notional = lt.ACC["initial_cash"] * 0.3
+    pos, eq, trades = None, [], 0
+    for i in range(lookback, n):
+        win = spread[i - lookback:i]
+        mean, std = statistics.mean(win), statistics.stdev(win)
+        if std < 1e-9:
+            continue
+        z = (spread[i] - mean) / std
+        if pos is None and abs(z) >= entry_z:
+            pos = {"dir": -1 if z > 0 else 1, "entry": spread[i]}
+            trades += 1
+        elif pos is not None and abs(z) <= exit_z:
+            cash += (spread[i] - pos["entry"]) * pos["dir"] * notional
+            pos = None
+            trades += 1
+        unreal = (spread[i] - pos["entry"]) * pos["dir"] * notional if pos else 0.0
+        eq.append([ts[i] * 1000, round(cash + unreal, 2)])
+    return {"equity": eq, "metrics": _bt_metrics([v for _, v in eq], trades)}
+
+
+def backtest_all() -> dict:
+    """全策略回测: 趋势/回归三策略 4 标的等权合成 + 价差类直接回测。日线。"""
+    out = {}
+    for strat in ("ma", "supertrend", "bb"):
+        curves, tn = [], 0
+        for s in CFG["symbols"]:
+            eq, n = _bt_signal_strategy(strat, s["symbol"])
+            if eq:
+                curves.append(eq)
+                tn += n
+        if curves:
+            n0 = min(len(c) for c in curves)
+            init = lt.ACC["initial_cash"]
+            merged = [[curves[0][i][0],
+                       round(sum(c[i][1] / init for c in curves) / len(curves) * init, 2)]
+                      for i in range(n0)]
+            out[strat] = {"equity": merged, "metrics": _bt_metrics([v for _, v in merged], tn)}
+    ka = {s["symbol"]: lt.fetch_kline(s["symbol"], BT_CFG.get("kline_count", 500), "day")
+          for s in CFG["symbols"]}
+    out["pairs"] = _bt_spread(ka["00700.HK"], ka["09988.HK"],
+                              lambda a, b: a / b,
+                              lt.STRAT.get("pair_lookback", 60),
+                              lt.STRAT.get("pair_entry_z", 2.0),
+                              lt.STRAT.get("pair_exit_z", 0.5))
+    kb = lt.fetch_kline(ARB_CFG.get("pair", ["", "BABA.US"])[1],
+                        BT_CFG.get("kline_count", 500), "day")
+    out["arb"] = _bt_spread(ka["09988.HK"], kb,
+                            lambda a, b: a * ARB_CFG.get("ads_ratio", 8)
+                            / ARB_CFG.get("fx_usdhkd", 7.8) / b,
+                            ARB_CFG.get("lookback", 60),
+                            ARB_CFG.get("entry_z", 2.0),
+                            ARB_CFG.get("exit_z", 0.5))
+    return out
 
 
 # ---------------------------------------------------------------- engine
@@ -453,6 +593,36 @@ def heat_snapshot():
     if not HEAT_CACHE:
         raise HTTPException(503, "engine warming up, try again in ~1 min")
     return dict(HEAT_CACHE)
+
+
+# ---------------------------------------------------------------- api (回测)
+def _bt_table():
+    with sdb() as c:
+        c.execute("CREATE TABLE IF NOT EXISTS backtest_runs("
+                  "id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, data TEXT NOT NULL)")
+
+
+@app.post("/v1/backtest", dependencies=[Depends(require_admin)])
+def run_backtest():
+    """立即跑全策略历史回测（日线）并落库。空闲时段由 cron 调用。"""
+    _bt_table()
+    data = backtest_all()
+    with sdb() as c:
+        c.execute("INSERT INTO backtest_runs(ts,data) VALUES(?,?)",
+                  (time.time(), json.dumps(data, ensure_ascii=False)))
+    return {"ok": True, "strategies": list(data.keys()),
+            "ts": time.time()}
+
+
+@app.get("/v1/backtest", dependencies=[Depends(require_token)])
+def last_backtest():
+    """最近一次回测结果（面板历史验证区）。"""
+    _bt_table()
+    with sdb() as c:
+        row = c.execute("SELECT ts, data FROM backtest_runs ORDER BY id DESC LIMIT 1").fetchone()
+    if not row:
+        raise HTTPException(404, "no backtest yet — POST /v1/backtest or wait for cron")
+    return {"ts": row["ts"], "result": json.loads(row["data"])}
 
 
 @app.get("/panel")

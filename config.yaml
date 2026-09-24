@@ -22,6 +22,12 @@ lysource:
   base_url: https://lain42.top/lysource
   # token 从环境变量 LYSOURCE_TOKEN 读取，避免落盘
 
+backtest:                       # 回测专用参数覆写（日线语义；实时盘用上方 5m 参数）
+  fast: 5                       # 日线 MA5
+  slow: 20                      # 日线 MA20
+  bb_multiplier: 2.0            # 日线 ±2σ
+  kline_count: 500              # 回测拉 500 根日线 ≈ 2 年
+
 arb:                              # 跨市场 ADR 套利（市场中性，不吃资讯热度过滤）
   enabled: true
   pair: ["09988.HK", "BABA.US"]   # 同一公司: 港股 × 美股 ADS

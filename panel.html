@@ -146,6 +146,26 @@ tailwind.config = {
     </div>
   </section>
 
+  <!-- 历史回测 -->
+  <section class="card p-4">
+    <div class="flex items-center justify-between mb-2">
+      <h2 class="text-sm font-medium">历史回测 <span class="text-mutedfg font-normal">· 日线 · 服务器空闲时段自动跑 · 趋势/回归三策略为 4 标的等权</span></h2>
+      <span id="btMeta" class="text-[11px] text-mutedfg"></span>
+    </div>
+    <div id="btChart" class="w-full" style="height:260px"></div>
+    <div class="overflow-x-auto mt-2">
+      <table class="w-full text-xs">
+        <thead><tr class="text-mutedfg border-b border-border">
+          <th class="text-left py-2 font-normal">策略</th><th class="text-right py-2 font-normal">总收益</th>
+          <th class="text-right py-2 font-normal">年化</th><th class="text-right py-2 font-normal">夏普</th>
+          <th class="text-right py-2 font-normal">最大回撤</th><th class="text-right py-2 font-normal">交易数</th>
+        </tr></thead>
+        <tbody id="btBody"><tr><td colspan="6" class="py-4 text-center text-mutedfg">回测数据加载中…</td></tr></tbody>
+      </table>
+    </div>
+    <p class="text-[11px] text-mutedfg mt-2">回测为纯策略信号验证，不含资讯热度过滤；价差类（Pairs/Arb）以名义头寸 30% 计价差 PnL。历史表现不代表未来。</p>
+  </section>
+
   <footer class="text-center text-[11px] text-mutedfg py-6 space-y-1">
     <p>数据为模拟交易（paper trading），仅用于策略验证，不构成投资建议。</p>
     <p>© 2026 云枢智创工作室 · 宿松县云枢智创数码信息科技服务工作室 · <a href="https://lain42.top" class="hover:text-accent" target="_blank">lain42.top</a></p>
@@ -260,7 +280,53 @@ async function refresh() {
     drawChart(series);
 
     renderMarket(); renderHeat();  // 行情 + 热度（异步并行，失败各自降级）
+    renderBacktest();
   } catch (e) { setConn(false, "连接失败: " + e.message); }
+}
+
+let btChart = null;
+const BT_META = { supertrend: ["Supertrend", "#FF6D00"], ma: ["MA Cross", "#38bdf8"],
+                  pairs: ["Pairs", "#a78bfa"], arb: ["Arb ADR", "#22d3ee"], bb: ["Bollinger", "#fbbf24"] };
+async function renderBacktest() {
+  try {
+    const r = await api("/v1/backtest");
+    const res = r.result || {};
+    const series = [];
+    const rows = [];
+    for (const [key, v] of Object.entries(res)) {
+      const meta = BT_META[key] || [key, "#888"];
+      if (v.equity && v.equity.length > 1)
+        series.push({ name: meta[0], color: meta[1], data: v.equity });
+      const m = v.metrics || {};
+      rows.push("<tr class='border-b border-border/50'><td class='py-2'>" +
+        "<i class='inline-block w-2 h-2 rounded-full mr-2' style='background:" + meta[1] + "'></i>" + meta[0] +
+        "</td><td class='text-right num'>" + (m.total_return || "--") +
+        "</td><td class='text-right num'>" + (m.annual || "--") +
+        "</td><td class='text-right num'>" + (m.sharpe != null ? m.sharpe : "--") +
+        "</td><td class='text-right num text-down'>" + (m.max_drawdown || "--") +
+        "</td><td class='text-right num'>" + (m.trades != null ? m.trades : "--") + "</td></tr>");
+    }
+    document.getElementById("btBody").innerHTML = rows.join("") ||
+      "<tr><td colspan='6' class='py-4 text-center text-mutedfg'>回测结果为空</td></tr>";
+    document.getElementById("btMeta").textContent =
+      "跑于 " + new Date(r.ts * 1000).toLocaleString("zh-CN", { hour12: false });
+    if (series.length) {
+      if (!btChart) btChart = echarts.init(document.getElementById("btChart"));
+      btChart.setOption({
+        backgroundColor: "transparent",
+        grid: { left: 60, right: 20, top: 20, bottom: 28 },
+        tooltip: { trigger: "axis", valueFormatter: v => Number(v).toLocaleString("en-US", { maximumFractionDigits: 0 }) },
+        legend: { top: 0, textStyle: { color: "#71717a", fontSize: 11 } },
+        xAxis: { type: "time", axisLine: { lineStyle: { color: "#27272a" } }, axisLabel: { color: "#71717a" } },
+        yAxis: { type: "value", scale: true, splitLine: { lineStyle: { color: "#18181b" } }, axisLabel: { color: "#71717a" } },
+        series: series.map(s => ({ name: s.name, type: "line", showSymbol: false, data: s.data,
+          lineStyle: { width: 1.5, color: s.color }, itemStyle: { color: s.color } })),
+      });
+    }
+  } catch (e) {
+    document.getElementById("btBody").innerHTML =
+      "<tr><td colspan='6' class='py-4 text-center text-mutedfg'>尚未回测 — 等待空闲时段定时任务或管理员触发</td></tr>";
+  }
 }
 
 const SPARKS = {};  // sym -> echarts 实例复用
