@@ -244,6 +244,6 @@ def panel():
 
 @app.get("/", include_in_schema=False)
 def root():
-    """根路径直接进面板（相对跳转，保留 pingap /lytrade 前缀）。"""
+    """根路径直接进面板（pingap /lytrade 前缀部署形态）。"""
     from fastapi.responses import RedirectResponse
-    return RedirectResponse(url="panel")
+    return RedirectResponse(url="/lytrade/panel")
