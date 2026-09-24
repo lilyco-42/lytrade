@@ -301,7 +301,9 @@ def _bt_signal_strategy(strategy: str, symbol: str) -> tuple[list, int]:
                     if sig in ("BUY", "SELL"):
                         lt.execute(conn, symbol, symbol, sig, kl[i]["close"], kl[i]["ts"],
                                    note=f"bt:{strategy}")
-                        lt.mark_equity(conn, {symbol: kl[i]["close"]})
+                    # 每根 bar 都记净值——只在信号 bar 记会让稀疏策略(如 dualthrust)
+                    # 净值点数 < 3, _bt_metrics 拿到空序列返回 {}
+                    lt.mark_equity(conn, {symbol: kl[i]["close"]})
                 eq = [[r["ts"] * 1000, r["total"]] for r in
                       conn.execute("SELECT ts,total FROM equity ORDER BY ts")]
                 n = conn.execute("SELECT COUNT(*) n FROM trades").fetchone()["n"]
