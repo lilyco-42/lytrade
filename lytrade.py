@@ -298,32 +298,59 @@ def ma_signal(closes: list[float]) -> str:
 # ---------------------------------------------------------------- paper broker
 def execute(c, symbol: str, name: str, side: str, price: float, ts: float,
             note: str = "") -> None:
-    """模拟撮合: 市价单 + 佣金 + 滑点, 含单标的仓位上限风控。"""
+    """模拟撮合: 市价单 + 佣金 + 滑点, 单标的仓位上限风控。支持多空双向:
+    positions.qty 负数=空头（cash 不动, 市值 qty*price 为负 → 净值自动反映浮盈亏）。"""
     cash = get_cash(c)
     fee_rate, slip = ACC["fee_rate"], ACC["slippage"]
     pos = c.execute("SELECT * FROM positions WHERE symbol=?", (symbol,)).fetchone()
+    qty0 = pos["qty"] if pos else 0.0
+    cap = ACC["initial_cash"] * ACC["max_position_pct"]
 
     if side == "BUY":
         px = round(price * (1 + slip), 4)
-        budget = min(cash * 0.95, ACC["initial_cash"] * ACC["max_position_pct"])
-        qty = math.floor(budget / px * 100) / 100  # 按 0.01 股粒度简化
-        if qty < 0.01:
-            return
-        fee = round(qty * px * fee_rate, 4)
-        if qty * px + fee > cash:
-            return
-        new_qty = (pos["qty"] if pos else 0) + qty
-        new_cost = ((pos["avg_cost"] * pos["qty"]) if pos else 0) + qty * px
-        c.execute("INSERT INTO positions(symbol,name,qty,avg_cost) VALUES(?,?,?,?)"
-                  " ON CONFLICT(symbol) DO UPDATE SET qty=?, avg_cost=?, name=?",
-                  (symbol, name, new_qty, new_cost / new_qty, new_qty, new_cost / new_qty, name))
-        c.execute("UPDATE account SET cash=? WHERE id=1", (cash - qty * px - fee,))
-    elif side == "SELL" and pos and pos["qty"] > 0:
+        if qty0 < 0:                              # 空仓回补（平空）
+            qty = min(-qty0, math.floor(cap / px * 100) / 100)
+            fee = round(qty * px * fee_rate, 4)
+            new_qty = round(qty0 + qty, 6)
+            if new_qty >= 0.01:
+                c.execute("UPDATE positions SET qty=? WHERE symbol=?", (new_qty, symbol))
+            else:
+                c.execute("DELETE FROM positions WHERE symbol=?", (symbol,))
+            c.execute("UPDATE account SET cash=? WHERE id=1", (cash - qty * px - fee,))
+        else:                                     # 开多/加多
+            budget = min(cash * 0.95, cap)
+            qty = math.floor(budget / px * 100) / 100  # 按 0.01 股粒度简化
+            if qty < 0.01:
+                return
+            fee = round(qty * px * fee_rate, 4)
+            if qty * px + fee > cash:
+                return
+            new_qty = qty0 + qty
+            new_cost = ((pos["avg_cost"] * qty0) if pos else 0) + qty * px
+            c.execute("INSERT INTO positions(symbol,name,qty,avg_cost) VALUES(?,?,?,?)"
+                      " ON CONFLICT(symbol) DO UPDATE SET qty=?, avg_cost=?, name=?",
+                      (symbol, name, new_qty, new_cost / new_qty, new_qty, new_cost / new_qty, name))
+            c.execute("UPDATE account SET cash=? WHERE id=1", (cash - qty * px - fee,))
+    elif side == "SELL":
         px = round(price * (1 - slip), 4)
-        qty = pos["qty"]
-        fee = round(qty * px * fee_rate, 4)
-        c.execute("DELETE FROM positions WHERE symbol=?", (symbol,))
-        c.execute("UPDATE account SET cash=? WHERE id=1", (cash + qty * px - fee,))
+        if qty0 > 0:                              # 平多
+            qty = qty0
+            fee = round(qty * px * fee_rate, 4)
+            c.execute("DELETE FROM positions WHERE symbol=?", (symbol,))
+            c.execute("UPDATE account SET cash=? WHERE id=1", (cash + qty * px - fee,))
+        else:                                     # 开空/加空
+            budget = min(cash * 0.95, cap)
+            qty = math.floor(budget / px * 100) / 100
+            if qty < 0.01:
+                return
+            fee = round(qty * px * fee_rate, 4)
+            new_qty = round(qty0 - qty, 6)
+            if pos:
+                c.execute("UPDATE positions SET qty=?, name=? WHERE symbol=?",
+                          (new_qty, name, symbol))
+            else:
+                c.execute("INSERT INTO positions(symbol,name,qty,avg_cost) VALUES(?,?,?,?)",
+                          (symbol, name, new_qty, px))
     else:
         return
     c.execute("INSERT INTO trades(ts,symbol,side,qty,price,fee,note) VALUES(?,?,?,?,?,?,?)",

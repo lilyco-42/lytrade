@@ -236,7 +236,7 @@ async function refresh() {
       .then(arrs => arrs.flat()).catch(() => []);
     document.getElementById("posBody").innerHTML = pos.length ? pos.map(p =>
       "<tr class='border-b border-border/50'><td class='py-2'>" + p.strategy + "</td><td>" + (SYMBOL_NAMES[p.symbol] || p.symbol) +
-      " <span class='text-mutedfg num'>" + p.symbol + "</span></td><td class='text-right num'>" + p.qty +
+      " <span class='text-mutedfg num'>" + p.symbol + "</span></td><td class='text-right num'>" + p.qty + (p.qty < 0 ? " <span class='badge bg-down/10 text-down'>空</span>" : "") +
       "</td><td class='text-right num'>" + Number(p.avg_cost).toFixed(2) + "</td></tr>").join("")
       : "<tr><td colspan='4' class='py-4 text-center text-mutedfg'>暂无持仓 — 各策略等待信号触发</td></tr>";
 

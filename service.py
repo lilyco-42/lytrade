@@ -260,6 +260,10 @@ def run_strategy(strat: str, klines: dict, quotes: dict, heat: dict) -> dict:
     with lt.db() as c:
         for sym, sig in sigs.items():
             if sig in ("BUY", "SELL") and quotes.get(sym):
+                if strat == "pairs" and sig == "SELL":
+                    p = c.execute("SELECT qty FROM positions WHERE symbol=?", (sym,)).fetchone()
+                    if not p or p["qty"] <= 0:
+                        continue   # pairs 的 SELL 仅为平仓语义, 无多仓不动作
                 name = next(s["name"] for s in CFG["symbols"] if s["symbol"] == sym)
                 if sig == "BUY" and heat.get(name, 0) < lt.STRAT.get("event_heat_min", 0.3):
                     print(f"[{strat}] {sym} BUY拦截: heat={heat.get(name, 0):.2f} "
