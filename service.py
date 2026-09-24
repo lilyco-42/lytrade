@@ -45,6 +45,10 @@ PAIRS = [("00700.HK", "09988.HK")]          # 同行业高相关对（v1 固定�
 lt.DB_PATH = DB_PATH
 LTOKEN = os.environ.get("LYSOURCE_TOKEN", "")
 
+# 面板只读缓存（引擎线程写 / API 线程读；整体替换避免读到半截状态）
+MARKET_CACHE: dict = {}   # {symbol: {name, price, chg_pct, closes:[近90收盘]}}
+HEAT_CACHE: dict = {}     # {heat:{名称:0-1}, signals:{策略:{sym:sig}}, ts}
+
 
 # ---------------------------------------------------------------- storage
 def sdb() -> sqlite3.Connection:
@@ -188,6 +192,21 @@ def run_cycle() -> dict:
     heat = {s["name"]: lt.event_heat([s["name"], s["symbol"]]) for s in CFG["symbols"]}
     out = {strat: run_strategy(strat, klines, quotes, heat) for strat in STRATEGIES}
     out["_heat"] = {k: round(v, 3) for k, v in heat.items()}  # 观测: 每轮日志可见热度
+
+    # 面板缓存: 行情 sparkline + 日涨跌 + 热度/信号快照
+    mkt = {}
+    for s in CFG["symbols"]:
+        sym = s["symbol"]
+        closes = [k["close"] for k in (klines.get(sym) or []) if k.get("close")][-90:]
+        q = quotes.get(sym)
+        prev = closes[-2] if len(closes) >= 2 else None
+        chg = round((q / prev - 1) * 100, 2) if q and prev else 0.0
+        mkt[sym] = {"name": s["name"], "price": q, "chg_pct": chg, "closes": closes}
+    MARKET_CACHE.clear(); MARKET_CACHE.update(mkt)
+    HEAT_CACHE.clear()
+    HEAT_CACHE.update({"heat": out["_heat"],
+                       "signals": {st: out[st]["signals"] for st in STRATEGIES},
+                       "ts": time.time()})
     return out
 
 
@@ -317,6 +336,22 @@ def equity(strategy: str, limit: int = 500):
             "SELECT ts, total FROM equity ORDER BY ts DESC LIMIT ?",
             (min(limit, 2000),)).fetchall()
     return {"equity": [[r["ts"] * 1000, r["total"]] for r in reversed(rows)]}
+
+
+@app.get("/v1/market", dependencies=[Depends(require_token)])
+def market():
+    """标的池行情快照（引擎每轮刷新: 最新价/日涨跌/近90收盘序列）。"""
+    if not MARKET_CACHE:
+        raise HTTPException(503, "engine warming up, try again in ~1 min")
+    return {"symbols": MARKET_CACHE, "ts": time.time()}
+
+
+@app.get("/v1/heat", dependencies=[Depends(require_token)])
+def heat_snapshot():
+    """最近一轮资讯热度与各策略信号（面板'为什么在等'可视化）。"""
+    if not HEAT_CACHE:
+        raise HTTPException(503, "engine warming up, try again in ~1 min")
+    return dict(HEAT_CACHE)
 
 
 @app.get("/panel")

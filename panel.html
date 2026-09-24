@@ -97,6 +97,20 @@ tailwind.config = {
     <div id="chart" class="w-full" style="height:320px"></div>
   </section>
 
+  <!-- 行情走势 -->
+  <section>
+    <h2 class="text-sm font-medium mb-3">标的行情 <span class="text-mutedfg font-normal">· 近 90 个交易日收盘</span></h2>
+    <div id="marketCards" class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="card p-4 text-xs text-mutedfg col-span-2 md:col-span-4">行情加载中…</div>
+    </div>
+  </section>
+
+  <!-- 热度与信号 -->
+  <section class="card p-4">
+    <h2 class="text-sm font-medium mb-3">资讯热度与信号 <span class="text-mutedfg font-normal">· 策略在等什么</span></h2>
+    <div id="heatBody" class="space-y-3"><div class="text-xs text-mutedfg">热度数据加载中…</div></div>
+  </section>
+
   <!-- 策略卡片 -->
   <section>
     <h2 class="text-sm font-medium mb-3">策略对比</h2>
@@ -242,12 +256,80 @@ async function refresh() {
       try { series.push({ key: st.key, name: st.name, color: st.color, data: (await api("/v1/equity/" + st.key)).equity }); } catch (e) {}
     }
     drawChart(series);
+
+    renderMarket(); renderHeat();  // 行情 + 热度（异步并行，失败各自降级）
   } catch (e) { setConn(false, "连接失败: " + e.message); }
+}
+
+const SPARKS = {};  // sym -> echarts 实例复用
+async function renderMarket() {
+  const box = document.getElementById("marketCards");
+  try {
+    const m = await api("/v1/market");
+    box.innerHTML = Object.entries(m.symbols).map(([sym, v]) => {
+      const up = (v.chg_pct || 0) > 0, down = (v.chg_pct || 0) < 0;
+      const cls = up ? "text-up" : down ? "text-down" : "text-mutedfg";
+      return '<div class="card p-4 space-y-2">' +
+        '<div class="flex items-baseline justify-between">' +
+        '<div><div class="text-sm font-medium">' + (v.name || sym) + '</div>' +
+        '<div class="text-[11px] text-mutedfg num">' + sym + '</div></div>' +
+        '<div class="text-right"><div class="num text-sm font-semibold">' + (v.price != null ? v.price : "--") + '</div>' +
+        '<div class="num text-[11px] ' + cls + '">' + (up ? "+" : "") + (v.chg_pct || 0).toFixed(2) + '%</div></div></div>' +
+        '<div id="spark_' + sym.replace(/\./g, "_") + '" style="height:56px"></div></div>';
+    }).join("");
+    for (const [sym, v] of Object.entries(m.symbols)) {
+      const div = document.getElementById("spark_" + sym.replace(/\./g, "_"));
+      if (!div || !v.closes || v.closes.length < 2) continue;
+      const up = (v.chg_pct || 0) > 0, down = (v.chg_pct || 0) < 0;
+      const color = up ? "#f87171" : down ? "#4ade80" : "#a1a1aa";  // 涨红跌绿
+      const ch = SPARKS[sym] && SPARKS[sym].getDom() === div ? SPARKS[sym] : echarts.init(div);
+      SPARKS[sym] = ch;
+      ch.setOption({ grid: { left: 0, right: 0, top: 4, bottom: 0 },
+        xAxis: { type: "category", show: false, data: v.closes.map((_, i) => i) },
+        yAxis: { type: "value", scale: true, show: false },
+        series: [{ type: "line", data: v.closes, showSymbol: false,
+          lineStyle: { width: 1.2, color: color },
+          areaStyle: { color: color + "22" } }] });
+    }
+  } catch (e) {
+    box.innerHTML = '<div class="card p-4 text-xs text-mutedfg col-span-2 md:col-span-4">行情预热中 — 引擎首轮抓取完成后显示（约 1 分钟）</div>';
+  }
+}
+
+async function renderHeat() {
+  const box = document.getElementById("heatBody");
+  try {
+    const h = await api("/v1/heat");
+    const findSym = name => Object.keys(SYMBOL_NAMES).find(k =>
+      name === SYMBOL_NAMES[k] || name.startsWith(SYMBOL_NAMES[k]) || SYMBOL_NAMES[k].startsWith(name)) || name;
+    box.innerHTML = Object.entries(h.heat || {}).map(([name, val]) => {
+      const pct = Math.round((val || 0) * 100);
+      const bar = (val || 0) >= 0.15 ? "bg-accent" : "bg-zinc-600";
+      const sym = findSym(name);
+      const sigs = STRATS.map(st => {
+        const sig = ((h.signals || {})[st.key] || {})[sym];
+        if (!sig) return "";
+        const c = sig === "BUY" ? "bg-up/10 text-up" : sig === "SELL" ? "bg-down/10 text-down" : "bg-muted text-mutedfg";
+        const label = sig === "BUY" ? "买入" : sig === "SELL" ? "卖出" : "观望";
+        return '<span class="badge ' + c + '">' + st.name.split(" ")[0] + " " + label + '</span>';
+      }).join(" ");
+      return '<div class="flex items-center gap-3 flex-wrap">' +
+        '<div class="w-20 text-xs shrink-0">' + name + '</div>' +
+        '<div class="flex-1 min-w-[120px] h-2 rounded-full bg-muted overflow-hidden"><div class="h-full ' + bar + '" style="width:' + pct + '%"></div></div>' +
+        '<div class="num text-[11px] text-mutedfg w-9 text-right">' + (val || 0).toFixed(2) + '</div>' +
+        '<div class="flex gap-1">' + sigs + '</div></div>';
+    }).join("") +
+      '<div class="text-[11px] text-mutedfg pt-1 border-t border-border/50">热度 = lysource 财经资讯命中强度（0-1，开仓阈值 0.15）。热度不足时策略禁止开新仓：不是引擎没跑，是在等「信号 + 资讯热度」同时到位。</div>';
+  } catch (e) {
+    box.innerHTML = '<div class="text-xs text-mutedfg">热度数据预热中 — 引擎首轮完成后显示</div>';
+  }
 }
 
 function drawChart(series) {
   if (!chart) chart = echarts.init(document.getElementById("chart"));
   const hasData = series.some(s => s.data.length > 1);
+  const flat = hasData && series.every(s => s.data.length === 0 ||
+    s.data.every(p => (Array.isArray(p) ? p[1] : p) === (Array.isArray(s.data[0]) ? s.data[0][1] : s.data[0])));
   chart.setOption({
     backgroundColor: "transparent",
     grid: { left: 60, right: 20, top: 20, bottom: 28 },
@@ -256,8 +338,10 @@ function drawChart(series) {
     yAxis: { type: "value", scale: true, splitLine: { lineStyle: { color: "#18181b" } }, axisLabel: { color: "#71717a" } },
     series: hasData ? series.map(s => ({ name: s.name, type: "line", showSymbol: false, data: s.data, lineStyle: { width: 1.5, color: s.color }, itemStyle: { color: s.color } }))
       : [{ type: "line", data: [] }],
+    graphic: [],
   });
   if (!hasData) chart.setOption({ graphic: [{ type: "text", left: "center", top: "middle", style: { text: "净值数据积累中 — 引擎每 5 分钟记录一次", fill: "#52525b", fontSize: 13 } }] });
+  else if (flat) chart.setOption({ graphic: [{ type: "text", left: "center", top: "middle", style: { text: "策略尚未开仓，净值恒定 100,000 — 等待「信号 + 资讯热度」同时满足（见下方热度与信号区）", fill: "#52525b", fontSize: 13 } }] });
 }
 
 function openSettings() {
