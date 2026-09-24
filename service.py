@@ -183,7 +183,7 @@ def run_cycle() -> dict:
             kl.append({"ts": q["ts"], "close": q["price"], "open": 0, "high": 0, "low": 0})
             quotes[sym] = q["price"]
         klines[sym] = kl
-    heat = {s["name"]: lt.event_heat(s["name"]) for s in CFG["symbols"]}
+    heat = {s["name"]: lt.event_heat([s["name"], s["symbol"]]) for s in CFG["symbols"]}
     return {strat: run_strategy(strat, klines, quotes, heat) for strat in STRATEGIES}
 
 

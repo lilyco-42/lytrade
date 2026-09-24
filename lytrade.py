@@ -163,20 +163,27 @@ def fetch_quote(symbol: str) -> dict | None:
 
 
 # ---------------------------------------------------------------- news signal
-def event_heat(name: str, now: float | None = None) -> float:
-    """lysource 资讯热度: 命中条目的 score 求和封顶 1.0（lysource 已含时间衰减）。"""
+def event_heat(keywords, now: float | None = None) -> float:
+    """lysource 资讯热度: 命中条目的 score 求和封顶 1.0（lysource 已含时间衰减）。
+    keywords 可为单个关键词或多关键词列表（如 ["腾讯控股", "00700.HK"]），取最大值。
+    查询异常时记中性 0.5（高于默认阈值=放行），避免资讯源故障导致永久禁开仓。"""
     if not LYSOURCE_TOKEN:
         return 0.0
+    if isinstance(keywords, str):
+        keywords = [keywords]
     base = CFG["lysource"]["base_url"]
-    try:
-        r = httpx.get(f"{base}/v1/resources", params={"q": name, "limit": 10},
-                      headers={"X-API-Token": LYSOURCE_TOKEN}, timeout=10)
-        r.raise_for_status()
-        items = r.json().get("items", [])
-        return min(1.0, sum(i.get("score", 0) for i in items))
-    except Exception as exc:
-        print(f"[warn] lysource 不可用({exc.__class__.__name__}), 热度记 0")
-        return 0.0
+    best = 0.0
+    for kw in keywords:
+        try:
+            r = httpx.get(f"{base}/v1/resources", params={"q": kw, "limit": 10},
+                          headers={"X-API-Token": LYSOURCE_TOKEN}, timeout=10)
+            r.raise_for_status()
+            items = r.json().get("items", [])
+            best = max(best, min(1.0, sum(i.get("score", 0) for i in items)))
+        except Exception as exc:
+            print(f"[warn] lysource 不可用({exc.__class__.__name__}), 关键词 {kw} 热度记中性 0.5")
+            best = max(best, 0.5)
+    return best
 
 
 # ---------------------------------------------------------------- indicators
@@ -383,7 +390,7 @@ def mode_live(interval: int = 300) -> None:
                 kl = fetch_kline(sym, STRAT["kline_count"])
                 closes = [k["close"] for k in kl] + [q["price"]]
                 sig = ma_signal(closes)
-                heat = event_heat(name)
+                heat = event_heat([name, sym])
                 pos = c.execute("SELECT qty FROM positions WHERE symbol=?", (sym,)).fetchone()
                 if sig == "BUY" and heat >= STRAT["event_heat_min"] and not pos:
                     execute(c, sym, name, "BUY", q["price"], now,

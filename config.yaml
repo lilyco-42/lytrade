@@ -12,7 +12,7 @@ strategy:
   fast: 5                       # MA5
   slow: 20                      # MA20
   event_lambda: 0.1             # 事件信号衰减 λ（方法论: e^(-λN)）
-  event_heat_min: 0.3           # 资讯热度低于此值时只平不开
+  event_heat_min: 0.15          # 资讯热度低于此值时只平不开（0.3 过严：科技 RSS 源对港股覆盖稀疏）
   kline_count: 120              # 回测/信号用日线根数
 
 lysource:
