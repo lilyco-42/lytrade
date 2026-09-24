@@ -281,6 +281,7 @@ def _bt_signal_strategy(strategy: str, symbol: str) -> tuple[list, int]:
                     "psar": lambda: lt.psar_signal([x["high"] for x in k],
                                                    [x["low"] for x in k], [x["close"] for x in k]),
                     "rsi": lambda: lt.rsi_signal([x["close"] for x in k]),
+                    "dualthrust": lambda: lt.dual_thrust_signal(k),
                     "ao": lambda: lt.ao_signal([x["high"] for x in k], [x["low"] for x in k]),
                     "ha": lambda: lt.ha_signal(k),
                     "orb": lambda: lt.orb_signal(k),
