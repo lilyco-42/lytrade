@@ -240,3 +240,10 @@ def panel():
     if not p.exists():
         raise HTTPException(404, "panel.html not found")
     return FileResponse(p, media_type="text/html")
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    """根路径直接进面板（相对跳转，保留 pingap /lytrade 前缀）。"""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="panel")
