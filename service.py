@@ -40,7 +40,8 @@ CFG = yaml.safe_load((BASE / "config.yaml").read_text(encoding="utf-8"))
 DB_PATH = BASE / "data" / "service.db"
 TOKEN = os.environ.get("LYTRADE_TOKEN", "")
 INTERVAL = int(os.environ.get("LYTRADE_INTERVAL", "60"))
-STRATEGIES = ["supertrend", "ma", "pairs", "arb", "bb"]
+STRATEGIES = ["supertrend", "ma", "pairs", "arb", "bb",
+              "macd", "psar", "rsi", "dualthrust"]
 PAIRS = [("00700.HK", "09988.HK")]          # 同行业高相关对（v1 固定）
 
 lt.DB_PATH = DB_PATH
@@ -266,13 +267,21 @@ def _bt_signal_strategy(strategy: str, symbol: str) -> tuple[list, int]:
     saved = dict(lt.STRAT)
     lt.STRAT.update(BT_CFG)                    # 覆写为日线语义参数
     try:
-        warmup = max(48, lt.STRAT.get("adx_filter_warmup", 30), lt.STRAT.get("bb_period", 20))
+        warmup = max(48, lt.STRAT.get("adx_filter_warmup", 30), lt.STRAT.get("bb_period", 20),
+                     lt.STRAT.get("macd_slow", 26) + lt.STRAT.get("macd_signal", 9),
+                     lt.STRAT.get("dt_lookback", 20))
         if len(kl) < warmup + 2:
             return [], 0
-        fn = {"ma": lambda k: lt.ma_signal([x["close"] for x in k]),
-              "supertrend": lambda k: lt.supertrend_signal(
-                  [x["high"] for x in k], [x["low"] for x in k], [x["close"] for x in k]),
-              "bb": lambda k: lt.bb_signal([x["close"] for x in k])}[strategy]
+        def fn(k):
+            return {"ma": lambda: lt.ma_signal([x["close"] for x in k]),
+                    "supertrend": lambda: lt.supertrend_signal(
+                        [x["high"] for x in k], [x["low"] for x in k], [x["close"] for x in k]),
+                    "bb": lambda: lt.bb_signal([x["close"] for x in k]),
+                    "macd": lambda: lt.macd_signal([x["close"] for x in k]),
+                    "psar": lambda: lt.psar_signal([x["high"] for x in k],
+                                                   [x["low"] for x in k], [x["close"] for x in k]),
+                    "rsi": lambda: lt.rsi_signal([x["close"] for x in k]),
+                    "dualthrust": lambda: lt.dual_thrust_signal(k)}[strategy]()
         tmp = BASE / "data" / f"bt_{strategy}_{symbol.replace('.', '_')}.db"
         try:
             tmp.unlink(missing_ok=True)
@@ -390,13 +399,18 @@ def run_strategy(strat: str, klines: dict, quotes: dict, heat: dict) -> dict:
     else:
         fn = {"supertrend": lt.supertrend_signal,
               "ma": lambda h, l, cl: lt.ma_signal(cl),
-              "bb": lambda h, l, cl: lt.bb_signal(cl)}[strat]
+              "bb": lambda h, l, cl: lt.bb_signal(cl),
+              "macd": lambda h, l, cl: lt.macd_signal(cl),
+              "psar": lt.psar_signal,
+              "rsi": lambda h, l, cl: lt.rsi_signal(cl)}[strat]
         for s in CFG["symbols"]:
             kl = klines[s["symbol"]]
             if len(kl) > lt.STRAT["slow"] + 2:
-                sigs[s["symbol"]] = fn([k["high"] for k in kl],
-                                       [k["low"] for k in kl],
-                                       [k["close"] for k in kl])
+                sig = (lt.dual_thrust_signal(kl) if strat == "dualthrust"
+                       else fn([k["high"] for k in kl],
+                               [k["low"] for k in kl],
+                               [k["close"] for k in kl]))
+                sigs[s["symbol"]] = sig
     with lt.db() as c:
         for sym, sig in sigs.items():
             if sig in ("BUY", "SELL") and quotes.get(sym):

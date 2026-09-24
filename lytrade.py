@@ -281,6 +281,118 @@ def bb_signal(closes: list[float]) -> str:
     return "HOLD"
 
 
+def _ema(values: list[float], period: int) -> list[float]:
+    """标准 EMA 递推（span = 2/(n+1)）。"""
+    k = 2 / (period + 1)
+    out, e = [], values[0]
+    for v in values:
+        e = v * k + e * (1 - k)
+        out.append(e)
+    return out
+
+
+def macd_signal(closes: list[float]) -> str:
+    """MACD 动量: DIF=EMA12-EMA26, DEA=EMA9(DIF); 金叉 BUY / 死叉 SELL。
+    移植自 je-suis-tm/quant-trading (Apache-2.0)，实现为标准 EMA 版。"""
+    fast, slow, sig = (STRAT.get("macd_fast", 12), STRAT.get("macd_slow", 26),
+                       STRAT.get("macd_signal", 9))
+    if len(closes) < slow + sig:
+        return "HOLD"
+    ema_f, ema_s = _ema(closes, fast), _ema(closes, slow)
+    dif = [f - s for f, s in zip(ema_f, ema_s)]
+    dea = _ema(dif, sig)
+    prev, cur = dif[-2] - dea[-2], dif[-1] - dea[-1]
+    if prev <= 0 < cur:
+        return "BUY"
+    if prev >= 0 > cur:
+        return "SELL"
+    return "HOLD"
+
+
+def psar_signal(highs: list[float], lows: list[float], closes: list[float]) -> str:
+    """Parabolic SAR 趋势跟踪（Wilder 递推, AF 0.02→0.2）: 最新一根趋势翻转出信号。
+    移植自 je-suis-tm/quant-trading (Apache-2.0)。"""
+    if len(closes) < 10:
+        return "HOLD"
+    af0, af_step, af_max = 0.02, 0.02, 0.2
+    bull = closes[1] >= closes[0]
+    sar = lows[0] if bull else highs[0]
+    ep = max(closes[:2]) if bull else min(closes[:2])
+    af = af0
+    sig = "HOLD"
+    last = len(closes) - 1
+    for i in range(2, len(closes)):
+        sar = sar + af * (ep - sar)
+        if bull:
+            sar = min(sar, lows[i - 1], lows[i - 2])   # SAR 不得高于前两根低点
+            if lows[i] < sar:                          # 跌破 → 翻空
+                bull, sar, ep, af = False, ep, lows[i], af0
+                if i == last:
+                    sig = "SELL"
+                continue
+            if highs[i] > ep:
+                ep, af = highs[i], min(af + af_step, af_max)
+        else:
+            sar = max(sar, highs[i - 1], highs[i - 2])
+            if highs[i] > sar:                         # 突破 → 翻多
+                bull, sar, ep, af = True, ep, highs[i], af0
+                if i == last:
+                    sig = "BUY"
+                continue
+            if lows[i] < ep:
+                ep, af = lows[i], min(af + af_step, af_max)
+    return sig
+
+
+def rsi_signal(closes: list[float]) -> str:
+    """RSI 均值回归（Wilder 平滑）: RSI<超卖 BUY / >超买 SELL(双向)。
+    移植自 je-suis-tm/quant-trading (Apache-2.0)。"""
+    period = STRAT.get("rsi_period", 14)
+    os_, ob = STRAT.get("rsi_oversold", 30), STRAT.get("rsi_overbought", 70)
+    if len(closes) < period + 2:
+        return "HOLD"
+    deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+    gains = [max(d, 0) for d in deltas[:period]]
+    losses = [max(-d, 0) for d in deltas[:period]]
+    ag, al = sum(gains) / period, sum(losses) / period
+    for d in deltas[period:]:
+        ag = (ag * (period - 1) + max(d, 0)) / period
+        al = (al * (period - 1) + max(-d, 0)) / period
+    rsi = 100.0 if al == 0 else 100 - 100 / (1 + ag / al)
+    if rsi <= os_:
+        return "BUY"
+    if rsi >= ob:
+        return "SELL"
+    return "HOLD"
+
+
+def dual_thrust_signal(kl: list[dict]) -> str:
+    """Dual Thrust 区间突破: N 根 range=max(HH-LC, HC-LL);
+    收盘 > 开盘+K1*range BUY / < 开盘-K2*range SELL(双向)。
+    移植自 je-suis-tm/quant-trading (Apache-2.0)，日内开盘基准适配为当前根。"""
+    n = STRAT.get("dt_lookback", 20)
+    k1 = STRAT.get("dt_k1", 0.5)
+    k2 = STRAT.get("dt_k2", 0.5)
+    if len(kl) < n + 1:
+        return "HOLD"
+    win = kl[-n - 1:-1]                     # 不含当前根
+    hh = max(x["high"] or x["close"] for x in win)
+    lc = min(x["close"] for x in win)
+    hc = max(x["close"] for x in win)
+    ll = min(x["low"] or x["close"] for x in win)
+    rng = max(hh - lc, hc - ll)
+    if rng <= 0:
+        return "HOLD"
+    cur = kl[-1]
+    base = cur["open"] or cur["close"]
+    px = cur["close"]
+    if px > base + k1 * rng:
+        return "BUY"
+    if px < base - k2 * rng:
+        return "SELL"
+    return "HOLD"
+
+
 def ma_signal(closes: list[float]) -> str:
     """双均线交叉: 金叉 BUY / 死叉 SELL / 其他 HOLD。"""
     f, s = STRAT["fast"], STRAT["slow"]
