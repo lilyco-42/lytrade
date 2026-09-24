@@ -26,6 +26,7 @@ from pathlib import Path
 import httpx
 import yaml
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 import lytrade as lt
 
@@ -157,9 +158,13 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="lytrade", version="0.3.0",
+app = FastAPI(title="lytrade", version="0.3.2",
               description="多策略并行模拟交易 · Supertrend/MA/Pairs",
               lifespan=lifespan)
+
+# 面板可能从本地预览/其他域打开，读接口有 Token 鉴权，CORS 放开
+app.add_middleware(CORSMiddleware, allow_origins=["*"],
+                   allow_methods=["*"], allow_headers=["*"])
 
 
 @app.get("/healthz")

@@ -168,7 +168,7 @@ const SYMBOL_NAMES = { "00700.HK": "腾讯控股", "09988.HK": "阿里巴巴", "
 let chart = null;
 
 function cfg() {
-  return { api: localStorage.getItem("lytrade_api") || location.origin.replace(/\/$/, ""),
+  return { api: localStorage.getItem("lytrade_api") || "https://lain42.top/lytrade",
            token: localStorage.getItem("lytrade_token") || "" };
 }
 async function api(path) {
