@@ -262,6 +262,25 @@ def supertrend_signal(highs: list[float], lows: list[float],
 
 
 # ---------------------------------------------------------------- strategy
+def bb_signal(closes: list[float]) -> str:
+    """布林带均值回归（高频）: 触下轨 BUY(超卖回归) / 触上轨 SELL(超买回落或持仓止盈)。"""
+    period = STRAT.get("bb_period", 20)
+    mult = STRAT.get("bb_multiplier", 2.0)
+    if len(closes) < period:
+        return "HOLD"
+    win = closes[-period:]
+    mid = statistics.mean(win)
+    std = statistics.pstdev(win)
+    if std < 1e-9:
+        return "HOLD"
+    px = closes[-1]
+    if px <= mid - mult * std:
+        return "BUY"
+    if px >= mid + mult * std:
+        return "SELL"
+    return "HOLD"
+
+
 def ma_signal(closes: list[float]) -> str:
     """双均线交叉: 金叉 BUY / 死叉 SELL / 其他 HOLD。"""
     f, s = STRAT["fast"], STRAT["slow"]

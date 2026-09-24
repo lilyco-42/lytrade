@@ -39,7 +39,7 @@ CFG = yaml.safe_load((BASE / "config.yaml").read_text(encoding="utf-8"))
 DB_PATH = BASE / "data" / "service.db"
 TOKEN = os.environ.get("LYTRADE_TOKEN", "")
 INTERVAL = int(os.environ.get("LYTRADE_INTERVAL", "60"))
-STRATEGIES = ["supertrend", "ma", "pairs", "arb"]
+STRATEGIES = ["supertrend", "ma", "pairs", "arb", "bb"]
 PAIRS = [("00700.HK", "09988.HK")]          # 同行业高相关对（v1 固定）
 
 lt.DB_PATH = DB_PATH
@@ -249,7 +249,8 @@ def run_strategy(strat: str, klines: dict, quotes: dict, heat: dict) -> dict:
                 sigs[a], sigs[b] = sa, sb
     else:
         fn = {"supertrend": lt.supertrend_signal,
-              "ma": lambda h, l, cl: lt.ma_signal(cl)}[strat]
+              "ma": lambda h, l, cl: lt.ma_signal(cl),
+              "bb": lambda h, l, cl: lt.bb_signal(cl)}[strat]
         for s in CFG["symbols"]:
             kl = klines[s["symbol"]]
             if len(kl) > lt.STRAT["slow"] + 2:

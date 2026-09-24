@@ -15,6 +15,8 @@ strategy:
   event_lambda: 0.1             # 事件信号衰减 λ（方法论: e^(-λN)）
   event_heat_min: 0.15          # 资讯热度低于此值时只平不开
   kline_count: 150              # 150 根 5 分钟线 ≈ 12.5 小时窗口
+  bb_period: 20                 # 布林带周期（根数）
+  bb_multiplier: 2.0            # 上下轨 ±2σ
 
 lysource:
   base_url: https://lain42.top/lysource

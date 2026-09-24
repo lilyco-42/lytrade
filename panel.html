@@ -114,7 +114,7 @@ tailwind.config = {
   <!-- 策略卡片 -->
   <section>
     <h2 class="text-sm font-medium mb-3">策略对比</h2>
-    <div id="strategyCards" class="grid md:grid-cols-2 lg:grid-cols-4 gap-4"></div>
+    <div id="strategyCards" class="grid md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4"></div>
   </section>
 
   <!-- 持仓 + 流水 -->
@@ -178,6 +178,7 @@ const STRATS = [
   { key: "ma",         name: "MA Cross",   desc: "MA5/20 双均线 · 基线对照", color: "#38bdf8" },
   { key: "pairs",      name: "Pairs",      desc: "Z-score 均值回归 · 震荡市", color: "#a78bfa" },
   { key: "arb",        name: "Arb ADR",    desc: "09988×BABA 跨市场溢价回归 · 市场中性", color: "#22d3ee" },
+  { key: "bb",         name: "Bollinger",  desc: "±2σ 触轨反转 · 分钟级高频", color: "#fbbf24" },
 ];
 const SYMBOL_NAMES = { "00700.HK": "腾讯控股", "09988.HK": "阿里巴巴", "AAPL.US": "苹果", "NVDA.US": "英伟达" };
 let chart = null;
