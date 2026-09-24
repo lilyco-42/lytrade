@@ -19,6 +19,16 @@ lysource:
   base_url: https://lain42.top/lysource
   # token 从环境变量 LYSOURCE_TOKEN 读取，避免落盘
 
+arb:                              # 跨市场 ADR 套利（市场中性，不吃资讯热度过滤）
+  enabled: true
+  pair: ["09988.HK", "BABA.US"]   # 同一公司: 港股 × 美股 ADS
+  ads_ratio: 8                    # 1 ADS = 8 ordinary shares
+  fx_usdhkd: 7.8                  # 联系汇率近似（7.75-7.85，误差<0.5%）
+  lookback: 60                    # 溢价率滚动窗口（交易日）
+  entry_z: 2.0                    # |Z|>2 开仓价差
+  exit_z: 0.5                     # |Z|<0.5 回归平仓
+  notional_pct: 0.3               # 名义头寸占初始资金 30%
+
 symbols:                        # CLI 用的 LongBridge 代码
   - symbol: 00700.HK
     name: 腾讯控股

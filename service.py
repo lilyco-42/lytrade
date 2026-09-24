@@ -39,7 +39,7 @@ CFG = yaml.safe_load((BASE / "config.yaml").read_text(encoding="utf-8"))
 DB_PATH = BASE / "data" / "service.db"
 TOKEN = os.environ.get("LYTRADE_TOKEN", "")
 INTERVAL = int(os.environ.get("LYTRADE_INTERVAL", "300"))
-STRATEGIES = ["supertrend", "ma", "pairs"]
+STRATEGIES = ["supertrend", "ma", "pairs", "arb"]
 PAIRS = [("00700.HK", "09988.HK")]          # 同行业高相关对（v1 固定）
 
 lt.DB_PATH = DB_PATH
@@ -144,9 +144,101 @@ def pairs_signal(kl_a: list[dict], kl_b: list[dict]) -> tuple[str, str]:
     return "HOLD", "HOLD"
 
 
+# ---------------------------------------------------------------- arb (跨市场 ADR 套利)
+ARB_CFG = CFG.get("arb", {})
+
+
+def arb_signal(premiums: list[float]) -> tuple[str, float]:
+    """溢价率序列 → (action, z)。
+    premium = 港股×ADS比率/汇率 / 美股ADS价 - 1；偏高(港股贵)→做空溢价，偏低→做多溢价。"""
+    lookback = ARB_CFG.get("lookback", 60)
+    if len(premiums) < lookback + 1:
+        return "WAIT", 0.0
+    win = premiums[-lookback:]
+    mean, std = statistics.mean(win), statistics.stdev(win)
+    if std < 1e-9:
+        return "WAIT", 0.0
+    z = (premiums[-1] - mean) / std
+    if abs(z) >= ARB_CFG.get("entry_z", 2.0):
+        return ("OPEN_SHORT" if z > 0 else "OPEN_LONG"), z   # 对溢价率的方向
+    if abs(z) <= ARB_CFG.get("exit_z", 0.5):
+        return "CLOSE", z
+    return "WAIT", z
+
+
+def arb_cycle(klines: dict, quotes: dict) -> dict:
+    """一轮跨市场套利: 09988.HK × BABA.US 溢价率均值回归。
+    独立账本 svc_arb.db —— trades/equity 复用通用表结构（API 零改动），
+    价差头寸存 spread_pos；PnL = (premium - entry) × dir × notional。"""
+    lt.DB_PATH = BASE / "data" / "svc_arb.db"
+    lt.init_db()
+    a_sym, b_sym = ARB_CFG.get("pair", ["09988.HK", "BABA.US"])
+    ratio, fx = ARB_CFG.get("ads_ratio", 8), ARB_CFG.get("fx_usdhkd", 7.8)
+    ka, kb = klines.get(a_sym) or [], klines.get(b_sym) or []
+    pa, pb = quotes.get(a_sym), quotes.get(b_sym)
+    if not (pa and pb) or len(ka) < ARB_CFG.get("lookback", 60) + 1:
+        return {"signals": {f"{a_sym}×{b_sym}": "WAIT"}, "equity": lt.ACC["initial_cash"]}
+
+    # 溢价率序列（对齐两腿历史收盘）
+    n = min(len(ka), len(kb))
+    premiums = []
+    for i in range(n):
+        va, vb = ka[-n + i]["close"], kb[-n + i]["close"]
+        if va and vb:
+            premiums.append(va * ratio / fx / vb - 1)
+
+    action, z = arb_signal(premiums)
+    cur = pa * ratio / fx / pb - 1          # 实时溢价（含最新报价）
+    pair_label = f"{a_sym}×{b_sym}"
+
+    with lt.db() as c:
+        c.execute("CREATE TABLE IF NOT EXISTS spread_pos("
+                  "id INTEGER PRIMARY KEY CHECK(id=1), dir INTEGER, "
+                  "entry_premium REAL, notional REAL, ts REAL)")
+        if not c.execute("SELECT 1 FROM account WHERE id=1").fetchone():
+            c.execute("INSERT INTO account(id,cash) VALUES(1,?)",
+                      (lt.ACC["initial_cash"],))
+        row = c.execute("SELECT * FROM spread_pos WHERE id=1").fetchone()
+        cash = c.execute("SELECT cash FROM account WHERE id=1").fetchone()["cash"]
+
+        if action in ("OPEN_SHORT", "OPEN_LONG") and not row:
+            notional = lt.ACC["initial_cash"] * ARB_CFG.get("notional_pct", 0.3)
+            dirn = -1 if action == "OPEN_SHORT" else 1
+            c.execute("INSERT OR REPLACE INTO spread_pos(id,dir,entry_premium,notional,ts)"
+                      " VALUES(1,?,?,?,?)", (dirn, cur, notional, time.time()))
+            c.execute("INSERT INTO trades(ts,symbol,side,qty,price,fee,note)"
+                      " VALUES(?,?,?,?,?,?,?)",
+                      (time.time(), pair_label, action, dirn, round(cur * 100, 3), 0,
+                       f"z={z:.2f} notional={notional:.0f} 双腿模拟(多便宜腿+空贵腿)"))
+            print(f"[arb] 开仓 {action} premium={cur:.3%} z={z:.2f}")
+        elif action == "CLOSE" and row:
+            pnl = (cur - row["entry_premium"]) * row["dir"] * row["notional"]
+            cash += pnl
+            c.execute("UPDATE account SET cash=? WHERE id=1", (cash,))
+            c.execute("DELETE FROM spread_pos WHERE id=1")
+            c.execute("INSERT INTO trades(ts,symbol,side,qty,price,fee,note)"
+                      " VALUES(?,?,?,?,?,?,?)",
+                      (time.time(), pair_label, "CLOSE", row["dir"],
+                       round(cur * 100, 3), 0,
+                       f"z={z:.2f} pnl={pnl:+.1f} 溢价回归平仓"))
+            print(f"[arb] 平仓 premium={cur:.3%} z={z:.2f} pnl={pnl:+.1f}")
+
+        row = c.execute("SELECT * FROM spread_pos WHERE id=1").fetchone()
+        unreal = ((cur - row["entry_premium"]) * row["dir"] * row["notional"]) if row else 0.0
+        total = cash + unreal
+        c.execute("INSERT OR REPLACE INTO equity(ts,cash,market_value,total)"
+                  " VALUES(?,?,?,?)", (time.time(), round(cash, 2),
+                                       round(unreal, 2), round(total, 2)))
+    sig = action if action != "WAIT" else ("HOLD" if row else "WAIT")
+    return {"signals": {pair_label: sig, "premium": f"{cur:.2%}", "z": round(z, 2)},
+            "equity": round(total, 2)}
+
+
 # ---------------------------------------------------------------- engine
 def run_strategy(strat: str, klines: dict, quotes: dict, heat: dict) -> dict:
     """单策略一轮: 独立 DB 账户 → 信号 → 撮合 → 净值。"""
+    if strat == "arb":
+        return arb_cycle(klines, quotes)   # 价差头寸市场中性, 不吃热度过滤
     lt.DB_PATH = BASE / "data" / f"svc_{strat}.db"
     lt.init_db()
     sigs: dict[str, str] = {}
@@ -181,8 +273,10 @@ def run_strategy(strat: str, klines: dict, quotes: dict, heat: dict) -> dict:
 def run_cycle() -> dict:
     """一轮全策略（行情共享拉取，省 API 配额）。"""
     klines, quotes = {}, {}
-    for s in CFG["symbols"]:
-        sym = s["symbol"]
+    syms = [s["symbol"] for s in CFG["symbols"]]
+    if ARB_CFG.get("enabled"):
+        syms += [x for x in ARB_CFG.get("pair", []) if x not in syms]
+    for sym in syms:
         kl = lt.fetch_kline(sym, lt.STRAT["kline_count"])
         q = lt.fetch_quote(sym)
         if q and q.get("price"):
