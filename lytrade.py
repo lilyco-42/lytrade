@@ -458,6 +458,8 @@ def execute(c, symbol: str, name: str, side: str, price: float, ts: float,
             fee = round(qty * px * fee_rate, 4)
             c.execute("INSERT INTO positions(symbol,name,qty,avg_cost) VALUES(?,?,?,?)",
                       (symbol, name, -qty, px))
+        else:
+            return   # 已有空仓: 重复 SELL 信号不动作（防趋势中敞口滚雪球）
     else:
         return
     c.execute("INSERT INTO trades(ts,symbol,side,qty,price,fee,note) VALUES(?,?,?,?,?,?,?)",
