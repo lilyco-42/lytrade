@@ -393,6 +393,126 @@ def dual_thrust_signal(kl: list[dict]) -> str:
     return "HOLD"
 
 
+def ao_signal(highs: list[float], lows: list[float]) -> str:
+    """Awesome Oscillator 动量: SMA5(median)-SMA34(median) 零轴上穿 BUY / 下穿 SELL。
+    移植自 je-suis-tm/quant-trading (Apache-2.0)，median=(H+L)/2；Saucer 形态省略（主观性强）。"""
+    f, s = STRAT.get("ao_fast", 5), STRAT.get("ao_slow", 34)
+    med = [(h + l) / 2 for h, l in zip(highs, lows)]
+    if len(med) < s + 1:
+        return "HOLD"
+    ao = [statistics.mean(med[i - f + 1:i + 1]) - statistics.mean(med[i - s + 1:i + 1])
+          for i in range(s - 1, len(med))]
+    if ao[-1] > 0 >= ao[-2]:
+        return "BUY"
+    if ao[-1] < 0 <= ao[-2]:
+        return "SELL"
+    return "HOLD"
+
+
+def ha_signal(kl: list[dict]) -> str:
+    """Heikin-Ashi 蜡烛（marubozu 触发）: 光头 HA 阴线+实体扩张 BUY / 光脚 HA 阳线 SELL。
+    移植自 je-suis-tm/quant-trading (Apache-2.0)，忠实保留原仓库多空语义（逆向风格，回测验证）。"""
+    if len(kl) < 3:
+        return "HOLD"
+    ha_c = [(x["open"] + x["close"] + x["high"] + x["low"]) / 4 for x in kl]
+    ha_o = [kl[0]["open"] or ha_c[0]]
+    for i in range(1, len(kl)):
+        ha_o.append((ha_o[i - 1] + ha_c[i - 1]) / 2)
+    body = [abs(o - c) for o, c in zip(ha_o, ha_c)]
+    i = len(kl) - 1
+    o, c = ha_o[i], ha_c[i]
+    # 多头触发: HA 阴线 + 无上影(HA open==HA high) + 实体扩张 + 前根同为阴线
+    if o > c and o >= kl[i]["high"] and body[i] > body[i - 1] and ha_o[i - 1] > ha_c[i - 1]:
+        return "BUY"
+    # 空头/平多触发: HA 阳线 + 无下影(HA open==HA low) + 前根同为阳线
+    if o < c and o <= kl[i]["low"] and ha_o[i - 1] < ha_c[i - 1]:
+        return "SELL"
+    return "HOLD"
+
+
+def orb_signal(kl: list[dict], session_open_utc: float | None = None) -> str:
+    """Opening Range Breakout（London Breakout 会话突破思路适配）:
+    5m 模式=会话开盘后 6 根(30min)高低点为 OR, 首次突破出信号(每会话每向一次),
+    仅会话前段(48根=4h)有效, 偏离 OR >1% 视为追高放弃(原版 risky_stop 100bp);
+    会话锚定: 配置 session_open_utc 用时钟穿越检测(美股已连续隔夜交易, gap 检测失效),
+    未配置回退 >=6h 间隔分组;
+    日线模式退化为突破昨高 BUY / 昨低 SELL（事件型）。
+    思路移植自 je-suis-tm/quant-trading London Breakout (Apache-2.0)。"""
+    if len(kl) < 3:
+        return "HOLD"
+    gaps = [kl[i]["ts"] - kl[i - 1]["ts"] for i in range(1, len(kl))]
+    if statistics.median(gaps) >= 4 * 3600:        # 日线
+        h, l = kl[-2]["high"], kl[-2]["low"]
+        pc, pp = kl[-1]["close"], kl[-2]["close"]
+        if h > 0 and pc > h >= pp:
+            return "BUY"
+        if l > 0 and pc < l <= pp:
+            return "SELL"
+        return "HOLD"
+    sess_start = None
+    if session_open_utc is not None:               # 时钟锚定: 最近一次穿越开盘时刻
+        for i in range(1, len(kl)):
+            h0 = (kl[i - 1]["ts"] % 86400) / 3600
+            h1 = (kl[i]["ts"] % 86400) / 3600
+            if h0 < session_open_utc <= h1:
+                sess_start = i
+    else:                                          # gap 分组回退
+        sess_start = 0
+        for i in range(1, len(kl)):
+            if kl[i]["ts"] - kl[i - 1]["ts"] >= 6 * 3600:
+                sess_start = i
+    if sess_start is None:
+        return "HOLD"
+    sess = kl[sess_start:]
+    or_n = STRAT.get("orb_window", 6)
+    trail = STRAT.get("orb_trail", 48)
+    j = len(sess) - 1
+    if len(sess) < or_n + 2 or not (or_n <= j < or_n + trail):
+        return "HOLD"
+    or_hi = max(x["high"] for x in sess[:or_n])
+    or_lo = min(x["low"] for x in sess[:or_n])
+    px = kl[-1]["close"]
+    prior = sess[or_n:j]
+    max_chase = STRAT.get("orb_max_chase", 0.01)
+    if or_hi > 0 and px > or_hi and all(x["close"] <= or_hi for x in prior) \
+            and (px - or_hi) / or_hi <= max_chase:
+        return "BUY"
+    if or_lo > 0 and px < or_lo and all(x["close"] >= or_lo for x in prior) \
+            and (or_lo - px) / or_lo <= max_chase:
+        return "SELL"
+    return "HOLD"
+
+
+def shooting_star_signal(kl: list[dict]) -> str:
+    """Shooting Star 见顶星形(确认根出 SELL) + Hammer 镜像(确认根出 BUY)。
+    思路移植自 je-suis-tm/quant-trading Shooting Star (Apache-2.0)；
+    原版为次日确认+固定±5%止损/7根持有期, 引擎无止损管理 → 镜像锤子线作反向信号。"""
+    if len(kl) < 40:
+        return "HOLD"
+    lb = STRAT.get("ss_lower_bound", 0.2)     # 对侧影线占比阈值
+    bs = STRAT.get("ss_body_size", 0.5)       # 实体相对均体上限
+    mean_body = statistics.mean(abs(x["open"] - x["close"]) for x in kl)
+    if mean_body <= 0:
+        return "HOLD"
+    prev, cur = kl[-2], kl[-1]
+    o, c, h, l = prev["open"], prev["close"], prev["high"], prev["low"]
+    body = abs(o - c)
+    # Shooting Star: 阴线 + 几乎无下影 + 小实体 + 上影>=2倍实体 + 前两根连续上涨
+    star = (o >= c and (c - l) < lb * body and body < bs * mean_body
+            and (h - o) >= 2 * (o - c)
+            and c >= kl[-3]["close"] >= kl[-4]["close"])
+    # Hammer 镜像: 阳线 + 几乎无上影 + 小实体 + 下影>=2倍实体 + 前两根连续下跌
+    hammer = (c >= o and (h - c) < lb * body and body < bs * mean_body
+              and (o - l) >= 2 * (c - o)
+              and c <= kl[-3]["close"] <= kl[-4]["close"])
+    # 确认根: 星形后一根不再创新高且收盘更低 → SELL / 锤子后一根不再创新低且收盘更高 → BUY
+    if star and cur["high"] <= h and cur["close"] <= c:
+        return "SELL"
+    if hammer and cur["low"] >= l and cur["close"] >= c:
+        return "BUY"
+    return "HOLD"
+
+
 def ma_signal(closes: list[float]) -> str:
     """双均线交叉: 金叉 BUY / 死叉 SELL / 其他 HOLD。"""
     f, s = STRAT["fast"], STRAT["slow"]

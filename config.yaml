@@ -41,9 +41,13 @@ arb:                              # 跨市场 ADR 套利（市场中性，不吃
 symbols:                        # CLI 用的 LongBridge 代码
   - symbol: 00700.HK
     name: 腾讯控股
+    session_open_utc: 1.5       # 09:30 HKT（orb 会话锚定用）
   - symbol: 09988.HK
     name: 阿里巴巴-W
+    session_open_utc: 1.5
   - symbol: AAPL.US
     name: 苹果
+    session_open_utc: 13.5      # 09:30 ET 常规盘
   - symbol: NVDA.US
     name: 英伟达
+    session_open_utc: 13.5

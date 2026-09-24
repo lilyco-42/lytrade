@@ -41,7 +41,7 @@ DB_PATH = BASE / "data" / "service.db"
 TOKEN = os.environ.get("LYTRADE_TOKEN", "")
 INTERVAL = int(os.environ.get("LYTRADE_INTERVAL", "60"))
 STRATEGIES = ["supertrend", "ma", "pairs", "arb", "bb",
-              "macd", "psar", "rsi", "dualthrust"]
+              "macd", "psar", "rsi", "dualthrust", "ao", "ha", "orb", "shootingstar"]
 PAIRS = [("00700.HK", "09988.HK")]          # 同行业高相关对（v1 固定）
 
 lt.DB_PATH = DB_PATH
@@ -281,7 +281,10 @@ def _bt_signal_strategy(strategy: str, symbol: str) -> tuple[list, int]:
                     "psar": lambda: lt.psar_signal([x["high"] for x in k],
                                                    [x["low"] for x in k], [x["close"] for x in k]),
                     "rsi": lambda: lt.rsi_signal([x["close"] for x in k]),
-                    "dualthrust": lambda: lt.dual_thrust_signal(k)}[strategy]()
+                    "ao": lambda: lt.ao_signal([x["high"] for x in k], [x["low"] for x in k]),
+                    "ha": lambda: lt.ha_signal(k),
+                    "orb": lambda: lt.orb_signal(k),
+                    "shootingstar": lambda: lt.shooting_star_signal(k)}[strategy]()
         tmp = BASE / "data" / f"bt_{strategy}_{symbol.replace('.', '_')}.db"
         try:
             tmp.unlink(missing_ok=True)
@@ -353,7 +356,8 @@ def _bt_spread(ka: list, kb: list, transform, lookback: int,
 def backtest_all() -> dict:
     """全策略回测: 趋势/回归三策略 4 标的等权合成 + 价差类直接回测。日线。"""
     out = {}
-    for strat in ("ma", "supertrend", "bb", "macd", "psar", "rsi", "dualthrust"):
+    for strat in ("ma", "supertrend", "bb", "macd", "psar", "rsi", "dualthrust",
+                  "ao", "ha", "orb", "shootingstar"):
         curves, tn = [], 0
         for s in CFG["symbols"]:
             eq, n = _bt_signal_strategy(strat, s["symbol"])
@@ -399,18 +403,22 @@ def run_strategy(strat: str, klines: dict, quotes: dict, heat: dict) -> dict:
                 sa, sb = pairs_signal(klines[a], klines[b])
                 sigs[a], sigs[b] = sa, sb
     else:
-        if strat == "dualthrust":
+        if strat in ("dualthrust", "ha", "orb", "shootingstar"):
+            fn_k = {"dualthrust": lt.dual_thrust_signal, "ha": lt.ha_signal,
+                    "orb": lt.orb_signal, "shootingstar": lt.shooting_star_signal}[strat]
             for s in CFG["symbols"]:
                 kl = klines[s["symbol"]]
                 if len(kl) > lt.STRAT["slow"] + 2:
-                    sigs[s["symbol"]] = lt.dual_thrust_signal(kl)
+                    sigs[s["symbol"]] = (fn_k(kl, s.get("session_open_utc")) if strat == "orb"
+                                         else fn_k(kl))
         else:
             fn = {"supertrend": lt.supertrend_signal,
                   "ma": lambda h, l, cl: lt.ma_signal(cl),
                   "bb": lambda h, l, cl: lt.bb_signal(cl),
                   "macd": lambda h, l, cl: lt.macd_signal(cl),
                   "psar": lt.psar_signal,
-                  "rsi": lambda h, l, cl: lt.rsi_signal(cl)}[strat]
+                  "rsi": lambda h, l, cl: lt.rsi_signal(cl),
+                  "ao": lambda h, l, cl: lt.ao_signal(h, l)}[strat]
             for s in CFG["symbols"]:
                 kl = klines[s["symbol"]]
                 if len(kl) > lt.STRAT["slow"] + 2:

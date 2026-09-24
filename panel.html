@@ -203,6 +203,10 @@ const STRATS = [
   { key: "psar",       name: "Para SAR",   desc: "SAR 追踪反转 · 强趋势", color: "#34d399" },
   { key: "rsi",        name: "RSI Revert", desc: "RSI(14) 超买超卖 · 双向回归", color: "#fb7185" },
   { key: "dualthrust", name: "Dual Thrust", desc: "区间突破 · 开盘基准双向", color: "#60a5fa" },
+  { key: "ao",         name: "Awesome Osc", desc: "AO(5,34) 零轴动量 · H+L 中价", color: "#4ade80" },
+  { key: "ha",         name: "Heikin-Ashi", desc: "HA 蜡烛 marubozu 触发", color: "#f9a8d4" },
+  { key: "orb",        name: "OR Breakout", desc: "开盘区间突破 · 会话锚定", color: "#facc15" },
+  { key: "shootingstar", name: "Shooting Star", desc: "星形/锤子确认 · 反转形态", color: "#93c5fd" },
 ];
 const SYMBOL_NAMES = { "00700.HK": "腾讯控股", "09988.HK": "阿里巴巴", "AAPL.US": "苹果", "NVDA.US": "英伟达" };
 let chart = null;
@@ -290,7 +294,8 @@ async function refresh() {
 
 let btChart = null;
 const BT_META = { supertrend: ["Supertrend", "#FF6D00"], ma: ["MA Cross", "#38bdf8"],
-                  pairs: ["Pairs", "#a78bfa"], arb: ["Arb ADR", "#22d3ee"], bb: ["Bollinger", "#fbbf24"], macd: ["MACD", "#f472b6"], psar: ["Para SAR", "#34d399"], rsi: ["RSI Revert", "#fb7185"], dualthrust: ["Dual Thrust", "#60a5fa"] };
+                  pairs: ["Pairs", "#a78bfa"], arb: ["Arb ADR", "#22d3ee"], bb: ["Bollinger", "#fbbf24"], macd: ["MACD", "#f472b6"], psar: ["Para SAR", "#34d399"], rsi: ["RSI Revert", "#fb7185"], dualthrust: ["Dual Thrust", "#60a5fa"],
+                  ao: ["Awesome Osc", "#4ade80"], ha: ["Heikin-Ashi", "#f9a8d4"], orb: ["OR Breakout", "#facc15"], shootingstar: ["Shooting Star", "#93c5fd"] };
 async function renderBacktest() {
   try {
     const r = await api("/v1/backtest");
