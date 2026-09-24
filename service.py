@@ -38,7 +38,7 @@ BASE = Path(__file__).resolve().parent
 CFG = yaml.safe_load((BASE / "config.yaml").read_text(encoding="utf-8"))
 DB_PATH = BASE / "data" / "service.db"
 TOKEN = os.environ.get("LYTRADE_TOKEN", "")
-INTERVAL = int(os.environ.get("LYTRADE_INTERVAL", "300"))
+INTERVAL = int(os.environ.get("LYTRADE_INTERVAL", "60"))
 STRATEGIES = ["supertrend", "ma", "pairs", "arb"]
 PAIRS = [("00700.HK", "09988.HK")]          # 同行业高相关对（v1 固定）
 
@@ -277,7 +277,8 @@ def run_cycle() -> dict:
     if ARB_CFG.get("enabled"):
         syms += [x for x in ARB_CFG.get("pair", []) if x not in syms]
     for sym in syms:
-        kl = lt.fetch_kline(sym, lt.STRAT["kline_count"])
+        kl = lt.fetch_kline(sym, lt.STRAT["kline_count"],
+                            lt.STRAT.get("kline_period", "day"))
         q = lt.fetch_quote(sym)
         if q and q.get("price"):
             kl.append({"ts": q["ts"], "close": q["price"], "open": 0, "high": 0, "low": 0})

@@ -126,9 +126,9 @@ def _parse_time(v) -> float:
         return 0.0
 
 
-def fetch_kline(symbol: str, count: int) -> list[dict]:
-    """历史日线（旧→新）。字段宽容解析（CLI 数值为字符串）。"""
-    data = cli_json(["kline", symbol, "--period", "day", "--count", str(count)])
+def fetch_kline(symbol: str, count: int, period: str = "day") -> list[dict]:
+    """历史 K 线（旧→新）。period: 1m 5m 15m 30m 1h day …（策略参数均按根数，切周期零改动）。"""
+    data = cli_json(["kline", symbol, "--period", period, "--count", str(count)])
     if not data:
         return []
     rows = data if isinstance(data, list) else data.get("candles") or data.get("items") or []

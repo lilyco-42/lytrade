@@ -9,11 +9,12 @@ account:
 
 strategy:
   name: ma_cross_plus_news      # 双均线 + 资讯热度过滤（事件驱动）
-  fast: 5                       # MA5
-  slow: 20                      # MA20
+  kline_period: 5m              # ⚡ 分钟级引擎: 日内信号活跃, 面板可见买卖滚动（回测 CLI 仍默认 day）
+  fast: 12                      # MA12 根 5m ≈ 1 小时
+  slow: 48                      # MA48 根 5m ≈ 4 小时
   event_lambda: 0.1             # 事件信号衰减 λ（方法论: e^(-λN)）
-  event_heat_min: 0.15          # 资讯热度低于此值时只平不开（0.3 过严：科技 RSS 源对港股覆盖稀疏）
-  kline_count: 120              # 回测/信号用日线根数
+  event_heat_min: 0.15          # 资讯热度低于此值时只平不开
+  kline_count: 150              # 150 根 5 分钟线 ≈ 12.5 小时窗口
 
 lysource:
   base_url: https://lain42.top/lysource
