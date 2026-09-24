@@ -165,6 +165,8 @@ def run_strategy(strat: str, klines: dict, quotes: dict, heat: dict) -> dict:
             if sig in ("BUY", "SELL") and quotes.get(sym):
                 name = next(s["name"] for s in CFG["symbols"] if s["symbol"] == sym)
                 if sig == "BUY" and heat.get(name, 0) < lt.STRAT.get("event_heat_min", 0.3):
+                    print(f"[{strat}] {sym} BUY拦截: heat={heat.get(name, 0):.2f} "
+                          f"< {lt.STRAT.get('event_heat_min')}")
                     sig = "HOLD"   # 资讯热度不足，禁止开仓
                 lt.execute(c, sym, name, sig, quotes[sym], time.time(),
                            note=f"{strat} heat={heat.get(name, 0):.2f}")
@@ -184,7 +186,9 @@ def run_cycle() -> dict:
             quotes[sym] = q["price"]
         klines[sym] = kl
     heat = {s["name"]: lt.event_heat([s["name"], s["symbol"]]) for s in CFG["symbols"]}
-    return {strat: run_strategy(strat, klines, quotes, heat) for strat in STRATEGIES}
+    out = {strat: run_strategy(strat, klines, quotes, heat) for strat in STRATEGIES}
+    out["_heat"] = {k: round(v, 3) for k, v in heat.items()}  # 观测: 每轮日志可见热度
+    return out
 
 
 def engine_loop() -> None:
