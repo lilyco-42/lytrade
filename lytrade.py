@@ -179,6 +179,79 @@ def event_heat(name: str, now: float | None = None) -> float:
         return 0.0
 
 
+# ---------------------------------------------------------------- indicators
+def _wilder(values: list[float], period: int) -> list[float]:
+    """Wilder 平滑（RMA）。"""
+    out, prev = [], 0.0
+    for i, v in enumerate(values):
+        prev = v if i == 0 else (prev * (period - 1) + v) / period
+        out.append(prev)
+    return out
+
+
+def atr(highs: list[float], lows: list[float], closes: list[float],
+        period: int = 10) -> list[float]:
+    trs = []
+    for i in range(len(closes)):
+        pc = closes[i - 1] if i else closes[i]
+        trs.append(max(highs[i] - lows[i], abs(highs[i] - pc), abs(lows[i] - pc)))
+    return _wilder(trs, period)
+
+
+def adx(highs: list[float], lows: list[float], closes: list[float],
+        period: int = 14) -> float:
+    """ADX 趋势强度（Wilder）。返回最新值。"""
+    n = len(closes)
+    if n < period * 2 + 1:
+        return 0.0
+    plus_dm, minus_dm, trs = [0.0], [0.0], []
+    for i in range(1, n):
+        up, dn = highs[i] - highs[i - 1], lows[i - 1] - lows[i]
+        plus_dm.append(up if up > dn and up > 0 else 0.0)
+        minus_dm.append(dn if dn > up and dn > 0 else 0.0)
+        pc = closes[i - 1]
+        trs.append(max(highs[i] - lows[i], abs(highs[i] - pc), abs(lows[i] - pc)))
+    tr_s = _wilder(trs[1:], period)
+    pdi = [p / t * 100 if t else 0 for p, t in zip(_wilder(plus_dm[1:], period), tr_s)]
+    mdi = [m / t * 100 if t else 0 for m, t in zip(_wilder(minus_dm[1:], period), tr_s)]
+    dx = [abs(p - m) / (p + m) * 100 if (p + m) else 0 for p, m in zip(pdi, mdi)]
+    return _wilder(dx, period)[-1]
+
+
+def supertrend_dir(highs: list[float], lows: list[float], closes: list[float],
+                   period: int = 10, multiplier: float = 3.0) -> list[int]:
+    """Supertrend 方向序列（1=up 多头, -1=down 空头）。标准 ATR 通道算法。"""
+    a = atr(highs, lows, closes, period)
+    n = len(closes)
+    direction, upper, lower = [1] * n, [0.0] * n, [0.0] * n
+    for i in range(n):
+        mid = (highs[i] + lows[i]) / 2
+        bub, blb = mid + multiplier * a[i], mid - multiplier * a[i]
+        fu = min(bub, upper[i - 1]) if i and closes[i - 1] <= upper[i - 1] else bub
+        fl = max(blb, lower[i - 1]) if i and closes[i - 1] >= lower[i - 1] else blb
+        upper[i], lower[i] = fu, fl
+        if i:
+            direction[i] = (1 if closes[i] > upper[i - 1]
+                            else -1 if closes[i] < lower[i - 1] else direction[i - 1])
+    return direction
+
+
+def supertrend_signal(highs: list[float], lows: list[float],
+                      closes: list[float]) -> str:
+    """Supertrend 翻多 BUY / 翻空 SELL；ADX<20 震荡市不追（抄 freqtrade 社区思路）。"""
+    if len(closes) < STRAT.get("adx_filter_warmup", 30):
+        return "HOLD"
+    d = supertrend_dir(highs, lows, closes,
+                       STRAT.get("st_period", 10), STRAT.get("st_multiplier", 3.0))
+    if len(d) < 2:
+        return "HOLD"
+    if d[-1] == 1 and d[-2] == -1:
+        return "BUY" if adx(highs, lows, closes) >= STRAT.get("adx_min", 20) else "HOLD"
+    if d[-1] == -1 and d[-2] == 1:
+        return "SELL"
+    return "HOLD"
+
+
 # ---------------------------------------------------------------- strategy
 def ma_signal(closes: list[float]) -> str:
     """双均线交叉: 金叉 BUY / 死叉 SELL / 其他 HOLD。"""
@@ -271,22 +344,27 @@ def performance(c) -> dict:
 
 
 # ---------------------------------------------------------------- modes
-def mode_backtest() -> None:
+def mode_backtest(strategy: str = "ma") -> None:
     init_db()
-    print("== 回测模式: 双均线日线策略 (无资讯过滤) ==")
+    sig_fn = {"ma": lambda k: ma_signal([x["close"] for x in k]),
+              "supertrend": lambda k: supertrend_signal(
+                  [x["high"] for x in k], [x["low"] for x in k],
+                  [x["close"] for x in k])}[strategy]
+    print(f"== 回测模式: strategy={strategy} ==")
     for s in CFG["symbols"]:
         sym, name = s["symbol"], s["name"]
         kl = fetch_kline(sym, STRAT["kline_count"])
         if len(kl) < STRAT["slow"] + 2:
             print(f"[skip] {sym} 日线不足({len(kl)})")
             continue
-        closes = [k["close"] for k in kl]
         with db() as c:
-            for i in range(STRAT["slow"], len(kl)):
-                sig = ma_signal(closes[: i + 1])
+            warmup = {"ma": STRAT["slow"], "supertrend": 30}[strategy]
+            for i in range(warmup, len(kl)):
+                sig = sig_fn(kl[: i + 1])
                 if sig in ("BUY", "SELL"):
-                    execute(c, sym, name, sig, closes[i], kl[i]["ts"], note="backtest")
-            mark_equity(c, {sym: closes[-1]})
+                    execute(c, sym, name, sig, kl[i]["close"], kl[i]["ts"],
+                            note=f"backtest:{strategy}")
+            mark_equity(c, {sym: kl[-1]["close"]})
     with db() as c:
         print(json.dumps(performance(c), ensure_ascii=False, indent=2))
 
@@ -327,5 +405,8 @@ def mode_status() -> None:
 
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "status"
-    {"backtest": mode_backtest, "live": mode_live,
-     "status": mode_status, "reset": reset_account}[mode]()
+    if mode == "backtest":
+        mode_backtest(sys.argv[2] if len(sys.argv) > 2 else "ma")
+    else:
+        {"live": mode_live, "status": mode_status,
+         "reset": reset_account}[mode]()
