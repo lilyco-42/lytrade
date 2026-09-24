@@ -7,14 +7,17 @@
 
 引擎线程每 5 分钟: quote/kline → 各策略信号 → 各自虚拟账户撮合
 API: GET /v1/strategies 绩效对比 · GET /v1/{s}/positions · GET /v1/{s}/trades
-鉴权: X-API-Token (环境变量 LYTRADE_TOKEN, 未设则开放)
-
+鉴权: 两级 —
+  管理员: X-API-Token == LYTRADE_TOKEN（env，兼容旧配置）→ 全权限 + 发放令牌
+  用户:   /v1/admin/tokens 发放的令牌（哈希入库，可设有效期/可撤销）→ 只读数据
 ⚠️ 仅供策略学习与验证，不构成投资建议；绝不调用真实下单接口。
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import secrets
 import sqlite3
 import statistics
 import subprocess
@@ -27,6 +30,7 @@ import httpx
 import yaml
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 import lytrade as lt
 
@@ -43,16 +47,67 @@ LTOKEN = os.environ.get("LYSOURCE_TOKEN", "")
 
 
 # ---------------------------------------------------------------- storage
+def sdb() -> sqlite3.Connection:
+    """service 自己的固定 DB（api_tokens），不受引擎切换 lt.DB_PATH 影响。"""
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
 def init_db() -> None:
     lt.init_db()
-    with lt.db() as c:
+    with sdb() as c:
         c.execute("CREATE TABLE IF NOT EXISTS strategy_state("
                   "strategy TEXT PRIMARY KEY, cash REAL, equity REAL, updated REAL)")
+        c.execute("CREATE TABLE IF NOT EXISTS api_tokens("
+                  "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                  "token_hash TEXT UNIQUE NOT NULL,"     # sha256(token)
+                  "owner TEXT NOT NULL,"
+                  "note TEXT DEFAULT '',"
+                  "created_at REAL NOT NULL,"
+                  "expires_at REAL,"                      # NULL = 永久
+                  "revoked INTEGER NOT NULL DEFAULT 0)")
 
 
 def acct(strategy: str) -> str:
     """每策略独立记账: 通过 strategy 前缀隔离 trades/positions 行。"""
     return strategy
+
+
+# ---------------------------------------------------------------- auth (两级)
+def _token_hash(raw: str) -> str:
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def require_token(x_api_token: str = Header(default="")) -> None:
+    """数据接口鉴权: 管理员 env token 或有效用户令牌。"""
+    if not TOKEN:
+        return
+    if x_api_token == TOKEN:
+        return
+    with sdb() as c:
+        row = c.execute(
+            "SELECT expires_at, revoked FROM api_tokens WHERE token_hash=?",
+            (_token_hash(x_api_token),)).fetchone()
+    if row and not row["revoked"] and (row["expires_at"] is None
+                                       or row["expires_at"] > time.time()):
+        return
+    raise HTTPException(401, "invalid token")
+
+
+def require_admin(x_api_token: str = Header(default="")) -> None:
+    """管理接口鉴权: 仅管理员 env token。"""
+    if TOKEN and x_api_token != TOKEN:
+        raise HTTPException(401, "admin token required")
+
+
+class TokenIn(BaseModel):
+    owner: str                     # 归属人（邮箱/ID/备注名）
+    days: int | None = None        # 有效期天数，None = 永久
+    note: str = ""
 
 
 # ---------------------------------------------------------------- pairs signal
@@ -145,11 +200,6 @@ def engine_loop() -> None:
 
 
 # ---------------------------------------------------------------- api
-def require_token(x_api_token: str = Header(default="")) -> None:
-    if TOKEN and x_api_token != TOKEN:
-        raise HTTPException(401, "invalid token")
-
-
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
@@ -165,6 +215,39 @@ app = FastAPI(title="lytrade", version="0.3.2",
 # 面板可能从本地预览/其他域打开，读接口有 Token 鉴权，CORS 放开
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
+
+
+# ---------------------------------------------------------------- api (管理: 令牌发放)
+@app.post("/v1/admin/tokens", dependencies=[Depends(require_admin)])
+def admin_create_token(body: TokenIn):
+    """管理员发放用户令牌（明文仅此一次返回）。"""
+    raw = secrets.token_urlsafe(24)
+    expires = time.time() + body.days * 86400 if body.days else None
+    with sdb() as c:
+        c.execute(
+            "INSERT INTO api_tokens(token_hash,owner,note,created_at,expires_at)"
+            " VALUES(?,?,?,?,?)",
+            (_token_hash(raw), body.owner, body.note, time.time(), expires))
+    return {"token": raw, "owner": body.owner,
+            "expires_at": expires, "days": body.days}
+
+
+@app.get("/v1/admin/tokens", dependencies=[Depends(require_admin)])
+def admin_list_tokens():
+    with sdb() as c:
+        rows = c.execute(
+            "SELECT id, owner, note, created_at, expires_at, revoked"
+            " FROM api_tokens ORDER BY id DESC").fetchall()
+    return {"tokens": [dict(r) for r in rows]}
+
+
+@app.delete("/v1/admin/tokens/{tid}", dependencies=[Depends(require_admin)])
+def admin_revoke_token(tid: int):
+    with sdb() as c:
+        cur = c.execute("UPDATE api_tokens SET revoked=1 WHERE id=?", (tid,))
+        if cur.rowcount == 0:
+            raise HTTPException(404, f"token id {tid} not found")
+    return {"ok": True, "revoked": tid}
 
 
 @app.get("/healthz")
